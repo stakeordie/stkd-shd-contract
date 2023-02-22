@@ -1,5 +1,4 @@
 #![allow(clippy::field_reassign_with_default)] // This is triggered in `#[derive(JsonSchema)]`
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +14,38 @@ pub struct InitialBalance {
     pub amount: Uint128,
 }
 
+#[cfg_attr(test, derive(Eq, PartialEq))]
+#[derive(Serialize, Deserialize, Clone, JsonSchema, Debug)]
+pub struct FeeInfo {
+    pub collector: Addr,
+    pub fee_rate: u32,
+}
+
+#[cfg_attr(test, derive(Eq, PartialEq))]
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
+pub struct ContractInfo {
+    pub address: Addr,
+    #[serde(default)]
+    pub code_hash: String,
+    // Optional entropy use to any transaction required to execute in this contract
+    pub entropy: Option<String>,
+}
+
+#[cfg_attr(test, derive(Eq, PartialEq))]
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
+pub struct StakingInfo {
+    // Staking contract (SHADE-CUSTOM) information
+    pub staking_contract_info: ContractInfo,
+    pub staking_contract_vk: String,
+    // Staking authentication contract (SHADE-CUSTOM) information
+    pub authentication_contract: ContractInfo,
+    // SHD (SNIP-20) information
+    pub shade_contract_info: ContractInfo,
+    pub shade_contract_vk: String,
+    // Fee collector and rate information
+    pub fee_info: FeeInfo,
+}
+
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct InstantiateMsg {
     pub name: String,
@@ -25,6 +56,10 @@ pub struct InstantiateMsg {
     pub prng_seed: Binary,
     pub config: Option<InitConfig>,
     pub supported_denoms: Option<Vec<String>>,
+    pub staking_contract_info: ContractInfo,
+    pub authentication_contract: ContractInfo,
+    pub shade_contract_info: ContractInfo,
+    pub fee_info: FeeInfo,
 }
 
 impl InstantiateMsg {

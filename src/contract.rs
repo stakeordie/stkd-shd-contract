@@ -5,20 +5,21 @@ use cosmwasm_std::{
     MessageInfo, Response, StdError, StdResult, Storage, Uint128,
 };
 use secret_toolkit::permit::{Permit, RevokedPermits, TokenPermissions};
+use secret_toolkit::snip20::{register_receive_msg, set_viewing_key_msg};
 use secret_toolkit::utils::{pad_handle_result, pad_query_result};
 use secret_toolkit::viewing_key::{ViewingKey, ViewingKeyStore};
-use secret_toolkit_crypto::sha_256;
+use secret_toolkit_crypto::{sha_256, Prng};
 
 use crate::batch;
-use crate::msg::QueryWithPermit;
 use crate::msg::{
     ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InstantiateMsg, QueryAnswer, QueryMsg,
     ResponseStatus::Success,
 };
+use crate::msg::{QueryWithPermit, StakingInfo};
 use crate::receiver::Snip20ReceiveMsg;
 use crate::state::{
     AllowancesStore, BalancesStore, Config, MintersStore, ReceiverHashStore, CONFIG,
-    CONTRACT_STATUS, TOTAL_SUPPLY,
+    CONTRACT_STATUS, STAKING_CONFIG, TOTAL_SUPPLY,
 };
 use crate::transaction_history::{
     store_burn, store_deposit, store_mint, store_redeem, store_transfer, StoredExtendedTx,
@@ -55,7 +56,7 @@ pub fn instantiate(
 
     let admin = match msg.admin {
         Some(admin_addr) => deps.api.addr_validate(admin_addr.as_str())?,
-        None => info.sender,
+        None => info.sender.clone(),
     };
 
     let mut total_supply: u128 = 0;
@@ -102,7 +103,7 @@ pub fn instantiate(
             redeem_is_enabled: init_config.redeem_enabled(),
             mint_is_enabled: init_config.mint_enabled(),
             burn_is_enabled: init_config.burn_enabled(),
-            contract_address: env.contract.address,
+            contract_address: env.contract.address.clone(),
             supported_denoms,
             can_modify_denoms: init_config.can_modify_denoms(),
         },
@@ -117,9 +118,69 @@ pub fn instantiate(
     MintersStore::save(deps.storage, minters)?;
 
     let prng_seed_hashed = sha_256(&msg.prng_seed.0);
-    ViewingKey::set_seed(deps.storage, &prng_seed_hashed);
+    ViewingKey::set_seed(deps.storage, &sha_256(&prng_seed_hashed));
 
-    Ok(Response::default())
+    // Generate viewing key for staking contract
+    let entropy: String = msg
+        .staking_contract_info
+        .entropy
+        .clone()
+        .unwrap_or(msg.prng_seed.to_string());
+    let (staking_contract_vk, new_seed) = new_viewing_key(
+        &info.sender.clone(),
+        &env,
+        &msg.prng_seed.0,
+        entropy.as_ref(),
+    );
+
+    // Generate viewing key for SHD contract
+    let entropy: String = msg
+        .shade_contract_info
+        .entropy
+        .clone()
+        .unwrap_or(msg.prng_seed.to_string());
+    let (shade_contract_vk, _new_seed) =
+        new_viewing_key(&info.sender.clone(), &env, &new_seed, entropy.as_ref());
+
+    STAKING_CONFIG.save(
+        deps.storage,
+        &StakingInfo {
+            staking_contract_vk: staking_contract_vk.clone(),
+            shade_contract_vk: shade_contract_vk.clone(),
+            authentication_contract: msg.authentication_contract.clone(),
+            shade_contract_info: msg.shade_contract_info.clone(),
+            staking_contract_info: msg.staking_contract_info,
+            fee_info: msg.fee_info,
+        },
+    )?;
+    let msgs: Vec<CosmosMsg> = vec![
+        // Register receive SHD contract
+        register_receive_msg(
+            env.contract.code_hash,
+            msg.shade_contract_info.entropy.clone(),
+            RESPONSE_BLOCK_SIZE,
+            msg.shade_contract_info.code_hash.clone(),
+            msg.shade_contract_info.address.to_string(),
+        )?,
+        // Set viewing key for SHD
+        set_viewing_key_msg(
+            shade_contract_vk,
+            msg.shade_contract_info.entropy,
+            RESPONSE_BLOCK_SIZE,
+            msg.shade_contract_info.code_hash,
+            msg.shade_contract_info.address.to_string(),
+        )?,
+        // Set viewing key for staking contract
+        set_viewing_key_msg(
+            staking_contract_vk,
+            msg.authentication_contract.entropy,
+            RESPONSE_BLOCK_SIZE,
+            msg.authentication_contract.code_hash,
+            msg.authentication_contract.address.to_string(),
+        )?,
+    ];
+
+    Ok(Response::default().add_messages(msgs))
 }
 
 #[entry_point]
@@ -1702,7 +1763,7 @@ mod tests {
     };
     use secret_toolkit::permit::{PermitParams, PermitSignature, PubKey};
 
-    use crate::msg::ResponseStatus;
+    use crate::msg::{ContractInfo as CustomContractInfo, FeeInfo, ResponseStatus};
     use crate::msg::{InitConfig, InitialBalance};
 
     use super::*;
@@ -1710,7 +1771,6 @@ mod tests {
     pub const VIEWING_KEY_SIZE: usize = 32;
 
     // Helper functions
-
     fn init_helper(
         initial_balances: Vec<InitialBalance>,
     ) -> (
@@ -1730,6 +1790,25 @@ mod tests {
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: None,
             supported_denoms: None,
+            staking_contract_info: CustomContractInfo {
+                address: Addr::unchecked("staking_contract_info_address"),
+                code_hash: String::from("staking_contract_info_code_hash"),
+                entropy: Some(String::from("4359o74nd8dnkjerjrh")),
+            },
+            authentication_contract: CustomContractInfo {
+                address: Addr::unchecked("authentication_contract_info_address"),
+                code_hash: String::from("authentication_contract_info_code_hash"),
+                entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
+            },
+            shade_contract_info: CustomContractInfo {
+                address: Addr::unchecked("shade_contract_info_address"),
+                code_hash: String::from("shade_contract_info_code_hash"),
+                entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
+            },
+            fee_info: FeeInfo {
+                collector: Addr::unchecked("collector_address"),
+                fee_rate: 5,
+            },
         };
 
         (instantiate(deps.as_mut(), env, info, init_msg), deps)
@@ -1776,6 +1855,25 @@ mod tests {
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: Some(init_config),
             supported_denoms: Some(supported_denoms),
+            staking_contract_info: CustomContractInfo {
+                address: Addr::unchecked("staking_contract_info_address"),
+                code_hash: String::from("staking_contract_info_code_hash"),
+                entropy: Some(String::from("4359o74nd8dnkjerjrh")),
+            },
+            authentication_contract: CustomContractInfo {
+                address: Addr::unchecked("authentication_contract_info_address"),
+                code_hash: String::from("authentication_contract_info_code_hash"),
+                entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
+            },
+            shade_contract_info: CustomContractInfo {
+                address: Addr::unchecked("shade_contract_info_address"),
+                code_hash: String::from("shade_contract_info_code_hash"),
+                entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
+            },
+            fee_info: FeeInfo {
+                collector: Addr::unchecked("collector_address"),
+                fee_rate: 5,
+            },
         };
 
         (instantiate(deps.as_mut(), env, info, init_msg), deps)
@@ -1864,7 +1962,66 @@ mod tests {
             address: "lebron".to_string(),
             amount: Uint128::new(5000),
         }]);
-        assert_eq!(init_result.unwrap(), Response::default());
+        let env = mock_env();
+        let info = mock_info("instantiator", &[]);
+        let prnd = Binary::from("lolz fun yay".as_bytes());
+        let staking_contract_info = CustomContractInfo {
+            address: Addr::unchecked("staking_contract_info_address"),
+            code_hash: String::from("staking_contract_info_code_hash"),
+            entropy: Some(String::from("4359o74nd8dnkjerjrh")),
+        };
+
+        let authentication_contract = CustomContractInfo {
+            address: Addr::unchecked("authentication_contract_info_address"),
+            code_hash: String::from("authentication_contract_info_code_hash"),
+            entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
+        };
+        let shade_contract_info = CustomContractInfo {
+            address: Addr::unchecked("shade_contract_info_address"),
+            code_hash: String::from("shade_contract_info_code_hash"),
+            entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
+        };
+
+        // Generate viewing key for staking contract
+        let entropy: String = staking_contract_info.entropy.clone().unwrap();
+        let (staking_contract_vk, new_seed) =
+            new_viewing_key(&info.sender.clone(), &env, &prnd.0, entropy.as_ref());
+
+        // Generate viewing key for SHD contract
+        let entropy: String = shade_contract_info.entropy.clone().unwrap();
+        let (shade_contract_vk, _new_seed) =
+            new_viewing_key(&info.sender.clone(), &env, &new_seed, entropy.as_ref());
+
+        let msgs: Vec<CosmosMsg> = vec![
+            // Register receive SHD contract
+            register_receive_msg(
+                env.contract.code_hash,
+                shade_contract_info.entropy.clone(),
+                RESPONSE_BLOCK_SIZE,
+                shade_contract_info.code_hash.clone(),
+                shade_contract_info.address.to_string(),
+            )
+            .unwrap(),
+            // Set viewing key for SHD
+            set_viewing_key_msg(
+                shade_contract_vk,
+                shade_contract_info.entropy,
+                RESPONSE_BLOCK_SIZE,
+                shade_contract_info.code_hash,
+                shade_contract_info.address.to_string(),
+            )
+            .unwrap(),
+            // Set viewing key for staking contract
+            set_viewing_key_msg(
+                staking_contract_vk,
+                authentication_contract.entropy,
+                RESPONSE_BLOCK_SIZE,
+                authentication_contract.code_hash,
+                authentication_contract.address.to_string(),
+            )
+            .unwrap(),
+        ];
+        assert_eq!(init_result.unwrap(), Response::default().add_messages(msgs));
 
         let constants = CONFIG.load(&deps.storage).unwrap();
         assert_eq!(TOTAL_SUPPLY.load(&deps.storage).unwrap(), 5000);
@@ -1901,7 +2058,67 @@ mod tests {
             0,
             vec!["uscrt".to_string()],
         );
-        assert_eq!(init_result.unwrap(), Response::default());
+
+        let env = mock_env();
+        let info = mock_info("instantiator", &[]);
+        let prnd = Binary::from("lolz fun yay".as_bytes());
+        let staking_contract_info = CustomContractInfo {
+            address: Addr::unchecked("staking_contract_info_address"),
+            code_hash: String::from("staking_contract_info_code_hash"),
+            entropy: Some(String::from("4359o74nd8dnkjerjrh")),
+        };
+
+        let authentication_contract = CustomContractInfo {
+            address: Addr::unchecked("authentication_contract_info_address"),
+            code_hash: String::from("authentication_contract_info_code_hash"),
+            entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
+        };
+        let shade_contract_info = CustomContractInfo {
+            address: Addr::unchecked("shade_contract_info_address"),
+            code_hash: String::from("shade_contract_info_code_hash"),
+            entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
+        };
+
+        // Generate viewing key for staking contract
+        let entropy: String = staking_contract_info.entropy.clone().unwrap();
+        let (staking_contract_vk, new_seed) =
+            new_viewing_key(&info.sender.clone(), &env, &prnd.0, entropy.as_ref());
+        println!("{}", format!("Staking contract vk {}", staking_contract_vk));
+        // Generate viewing key for SHD contract
+        let entropy: String = shade_contract_info.entropy.clone().unwrap();
+        let (shade_contract_vk, _new_seed) =
+            new_viewing_key(&info.sender.clone(), &env, &new_seed, entropy.as_ref());
+        println!("{}", format!("shd contract vk {}", shade_contract_vk));
+        let msgs: Vec<CosmosMsg> = vec![
+            // Register receive SHD contract
+            register_receive_msg(
+                env.contract.code_hash,
+                shade_contract_info.entropy.clone(),
+                RESPONSE_BLOCK_SIZE,
+                shade_contract_info.code_hash.clone(),
+                shade_contract_info.address.to_string(),
+            )
+            .unwrap(),
+            // Set viewing key for SHD
+            set_viewing_key_msg(
+                shade_contract_vk,
+                shade_contract_info.entropy,
+                RESPONSE_BLOCK_SIZE,
+                shade_contract_info.code_hash,
+                shade_contract_info.address.to_string(),
+            )
+            .unwrap(),
+            // Set viewing key for staking contract
+            set_viewing_key_msg(
+                staking_contract_vk,
+                authentication_contract.entropy,
+                RESPONSE_BLOCK_SIZE,
+                authentication_contract.code_hash,
+                authentication_contract.address.to_string(),
+            )
+            .unwrap(),
+        ];
+        assert_eq!(init_result.unwrap(), Response::default().add_messages(msgs));
 
         let constants = CONFIG.load(&deps.storage).unwrap();
         assert_eq!(TOTAL_SUPPLY.load(&deps.storage).unwrap(), 5000);
@@ -3978,6 +4195,25 @@ mod tests {
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: Some(init_config),
             supported_denoms: None,
+            staking_contract_info: CustomContractInfo {
+                address: Addr::unchecked("staking_contract_info_address"),
+                code_hash: String::from("staking_contract_info_code_hash"),
+                entropy: Some(String::from("4359o74nd8dnkjerjrh")),
+            },
+            authentication_contract: CustomContractInfo {
+                address: Addr::unchecked("authentication_contract_info_address"),
+                code_hash: String::from("authentication_contract_info_code_hash"),
+                entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
+            },
+            shade_contract_info: CustomContractInfo {
+                address: Addr::unchecked("shade_contract_info_address"),
+                code_hash: String::from("shade_contract_info_code_hash"),
+                entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
+            },
+            fee_info: FeeInfo {
+                collector: Addr::unchecked("collector_address"),
+                fee_rate: 5,
+            },
         };
         let init_result = instantiate(deps.as_mut(), env, info, init_msg);
         assert!(
@@ -4046,6 +4282,25 @@ mod tests {
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: Some(init_config),
             supported_denoms: None,
+            staking_contract_info: CustomContractInfo {
+                address: Addr::unchecked("staking_contract_info_address"),
+                code_hash: String::from("staking_contract_info_code_hash"),
+                entropy: Some(String::from("4359o74nd8dnkjerjrh")),
+            },
+            authentication_contract: CustomContractInfo {
+                address: Addr::unchecked("authentication_contract_info_address"),
+                code_hash: String::from("authentication_contract_info_code_hash"),
+                entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
+            },
+            shade_contract_info: CustomContractInfo {
+                address: Addr::unchecked("shade_contract_info_address"),
+                code_hash: String::from("shade_contract_info_code_hash"),
+                entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
+            },
+            fee_info: FeeInfo {
+                collector: Addr::unchecked("collector_address"),
+                fee_rate: 5,
+            },
         };
         let init_result = instantiate(deps.as_mut(), env, info, init_msg);
         assert!(
@@ -4119,6 +4374,25 @@ mod tests {
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: Some(init_config),
             supported_denoms: Some(vec!["uscrt".to_string()]),
+            staking_contract_info: CustomContractInfo {
+                address: Addr::unchecked("staking_contract_info_address"),
+                code_hash: String::from("staking_contract_info_code_hash"),
+                entropy: Some(String::from("4359o74nd8dnkjerjrh")),
+            },
+            authentication_contract: CustomContractInfo {
+                address: Addr::unchecked("authentication_contract_info_address"),
+                code_hash: String::from("authentication_contract_info_code_hash"),
+                entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
+            },
+            shade_contract_info: CustomContractInfo {
+                address: Addr::unchecked("shade_contract_info_address"),
+                code_hash: String::from("shade_contract_info_code_hash"),
+                entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
+            },
+            fee_info: FeeInfo {
+                collector: Addr::unchecked("collector_address"),
+                fee_rate: 5,
+            },
         };
         let init_result = instantiate(deps.as_mut(), env, info, init_msg);
         assert!(
@@ -4178,6 +4452,25 @@ mod tests {
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: Some(init_config),
             supported_denoms: Some(vec!["uscrt".to_string()]),
+            staking_contract_info: CustomContractInfo {
+                address: Addr::unchecked("staking_contract_info_address"),
+                code_hash: String::from("staking_contract_info_code_hash"),
+                entropy: Some(String::from("4359o74nd8dnkjerjrh")),
+            },
+            authentication_contract: CustomContractInfo {
+                address: Addr::unchecked("authentication_contract_info_address"),
+                code_hash: String::from("authentication_contract_info_code_hash"),
+                entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
+            },
+            shade_contract_info: CustomContractInfo {
+                address: Addr::unchecked("shade_contract_info_address"),
+                code_hash: String::from("shade_contract_info_code_hash"),
+                entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
+            },
+            fee_info: FeeInfo {
+                collector: Addr::unchecked("collector_address"),
+                fee_rate: 5,
+            },
         };
         let init_result = instantiate(deps.as_mut(), env, info, init_msg);
         assert!(
@@ -4237,6 +4530,25 @@ mod tests {
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: Some(init_config),
             supported_denoms: Some(vec!["uscrt".to_string()]),
+            staking_contract_info: CustomContractInfo {
+                address: Addr::unchecked("staking_contract_info_address"),
+                code_hash: String::from("staking_contract_info_code_hash"),
+                entropy: Some(String::from("4359o74nd8dnkjerjrh")),
+            },
+            authentication_contract: CustomContractInfo {
+                address: Addr::unchecked("authentication_contract_info_address"),
+                code_hash: String::from("authentication_contract_info_code_hash"),
+                entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
+            },
+            shade_contract_info: CustomContractInfo {
+                address: Addr::unchecked("shade_contract_info_address"),
+                code_hash: String::from("shade_contract_info_code_hash"),
+                entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
+            },
+            fee_info: FeeInfo {
+                collector: Addr::unchecked("collector_address"),
+                fee_rate: 5,
+            },
         };
         let init_result = instantiate(deps.as_mut(), env, info, init_msg);
         assert!(
@@ -4284,6 +4596,25 @@ mod tests {
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             config: None,
             supported_denoms: None,
+            staking_contract_info: CustomContractInfo {
+                address: Addr::unchecked("staking_contract_info_address"),
+                code_hash: String::from("staking_contract_info_code_hash"),
+                entropy: Some(String::from("4359o74nd8dnkjerjrh")),
+            },
+            authentication_contract: CustomContractInfo {
+                address: Addr::unchecked("authentication_contract_info_address"),
+                code_hash: String::from("authentication_contract_info_code_hash"),
+                entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
+            },
+            shade_contract_info: CustomContractInfo {
+                address: Addr::unchecked("shade_contract_info_address"),
+                code_hash: String::from("shade_contract_info_code_hash"),
+                entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
+            },
+            fee_info: FeeInfo {
+                collector: Addr::unchecked("collector_address"),
+                fee_rate: 5,
+            },
         };
         let init_result = instantiate(deps.as_mut(), env, info, init_msg);
         assert!(
@@ -4859,4 +5190,30 @@ mod tests {
 
         assert_eq!(transfers, expected_transfers);
     }
+}
+
+// Copied from secret-toolkit-viewing-key-0.7.0
+pub fn new_viewing_key(
+    sender: &Addr,
+    env: &Env,
+    seed: &[u8],
+    entropy: &[u8],
+) -> (String, [u8; 32]) {
+    pub const VIEWING_KEY_PREFIX: &str = "api_key_";
+    // 16 here represents the lengths in bytes of the block height and time.
+    let entropy_len = 16 + sender.to_string().len() + entropy.len();
+    let mut rng_entropy = Vec::with_capacity(entropy_len);
+    rng_entropy.extend_from_slice(&env.block.height.to_be_bytes());
+    rng_entropy.extend_from_slice(&env.block.time.seconds().to_be_bytes());
+    rng_entropy.extend_from_slice(sender.as_bytes());
+    rng_entropy.extend_from_slice(entropy);
+
+    let mut rng = Prng::new(seed, &rng_entropy);
+
+    let rand_slice = rng.rand_bytes();
+
+    let key = sha_256(&rand_slice);
+
+    let viewing_key = VIEWING_KEY_PREFIX.to_string() + &base64::encode(key);
+    (viewing_key, rand_slice)
 }
