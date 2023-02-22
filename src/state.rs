@@ -5,9 +5,10 @@ use cosmwasm_std::{Addr, StdError, StdResult, Storage};
 use secret_toolkit::serialization::Json;
 use secret_toolkit::storage::{Item, Keymap};
 
-use crate::msg::ContractStatusLevel;
+use crate::msg::{ContractStatusLevel, StakingInfo};
 
 pub const KEY_CONFIG: &[u8] = b"config";
+pub const KEY_STAKING_INFO: &[u8] = b"staking_info";
 pub const KEY_TOTAL_SUPPLY: &[u8] = b"total_supply";
 pub const KEY_CONTRACT_STATUS: &[u8] = b"contract_status";
 pub const KEY_MINTERS: &[u8] = b"minters";
@@ -45,6 +46,8 @@ pub struct Config {
     // can admin add or remove supported denoms
     pub can_modify_denoms: bool,
 }
+
+pub static STAKING_CONFIG: Item<StakingInfo> = Item::new(KEY_STAKING_INFO);
 
 pub static CONFIG: Item<Config> = Item::new(KEY_CONFIG);
 
