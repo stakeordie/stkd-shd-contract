@@ -2,7 +2,7 @@
 /// https://github.com/SecretFoundation/SNIPs/blob/master/SNIP-20.md
 use cosmwasm_std::{
     entry_point, to_binary, Addr, BankMsg, Binary, Coin, CosmosMsg, Deps, DepsMut, Env,
-    MessageInfo, Response, StdError, StdResult, Storage, Uint128,
+    MessageInfo, Response, StdError, StdResult, Storage, Uint128, Uint256,
 };
 use secret_toolkit::permit::{Permit, RevokedPermits, TokenPermissions};
 use secret_toolkit::snip20::{register_receive_msg, set_viewing_key_msg};
@@ -208,6 +208,13 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
     }
 
     let response = match msg {
+        //Receiver interface
+        ExecuteMsg::Receive {
+            sender: _,
+            from,
+            amount,
+            msg,
+        } => try_stake(deps, env, info, from, amount, msg),
         // Native
         ExecuteMsg::Deposit { .. } => try_deposit(deps, env, info),
         ExecuteMsg::Redeem { amount, denom, .. } => try_redeem(deps, env, info, amount, denom),
@@ -5190,6 +5197,57 @@ mod tests {
 
         assert_eq!(transfers, expected_transfers);
     }
+
+    #[test]
+    fn test_receive_msg_sender_is_not_shd_contract() {
+        let (init_result, mut deps) = init_helper(vec![]);
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::Receive {
+            sender: Addr::unchecked(""),
+            from: Addr::unchecked(""),
+            amount: Uint256::from(100000000 as u32),
+            msg: None,
+        };
+        let info = mock_info("giannis", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(handle_result.is_err());
+        let error = extract_error_msg(handle_result);
+
+        assert_eq!(error, "Sender is not SHD contract");
+    }
+
+    #[test]
+    fn test_receive_msg_successfully() {
+        let (init_result, mut deps) = init_helper(vec![]);
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::Receive {
+            sender: Addr::unchecked(""),
+            from: Addr::unchecked(""),
+            amount: Uint256::from(100000000 as u32),
+            msg: None,
+        };
+        let info = mock_info("shade_contract_info_address", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+    }
 }
 
 // Copied from secret-toolkit-viewing-key-0.7.0
@@ -5216,4 +5274,26 @@ pub fn new_viewing_key(
 
     let viewing_key = VIEWING_KEY_PREFIX.to_string() + &base64::encode(key);
     (viewing_key, rand_slice)
+}
+
+/// Try to stake SHD received tokens
+///
+/// Interacts directly with the Staking contract
+///
+/// @param amount of receiving tokens
+fn try_stake(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    // Staker address
+    _from: Addr,
+    _amount: Uint256,
+    _msg: Option<Binary>,
+) -> StdResult<Response> {
+    let staking_config = STAKING_CONFIG.load(deps.storage)?;
+    if info.sender != staking_config.shade_contract_info.address {
+        return Err(StdError::generic_err("Sender is not SHD contract"));
+    }
+
+    Ok(Response::default())
 }

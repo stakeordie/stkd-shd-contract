@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::batch;
 use crate::transaction_history::{ExtendedTx, Tx};
-use cosmwasm_std::{Addr, Api, Binary, StdError, StdResult, Uint128};
+use cosmwasm_std::{Addr, Api, Binary, StdError, StdResult, Uint128, Uint256};
 use secret_toolkit::permit::Permit;
 
 #[cfg_attr(test, derive(Eq, PartialEq))]
@@ -123,6 +123,14 @@ impl InitConfig {
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteMsg {
+    //Receiver interface
+    Receive {
+        sender: Addr,
+        from: Addr,
+        amount: Uint256,
+        #[serde(default)]
+        msg: Option<Binary>,
+    },
     // Native coin interactions
     Redeem {
         amount: Uint128,
