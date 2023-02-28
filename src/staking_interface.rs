@@ -1,6 +1,5 @@
+use crate::state::RESPONSE_BLOCK_SIZE;
 use core::fmt;
-
-use crate::contract::RESPONSE_BLOCK_SIZE;
 use cosmwasm_std::{
     to_binary, Addr, CosmosMsg, CustomQuery, QuerierWrapper, QueryRequest, StdError, StdResult,
     Uint128, WasmMsg, WasmQuery,
@@ -160,13 +159,13 @@ impl StakingQuery {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Unbonding {
     pub token: Addr,
     pub amount: Uint128,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct Reward {
     pub token: Addr,
@@ -187,12 +186,12 @@ pub struct Balance {
     pub amount: Uint128,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Rewards {
     pub rewards: Vec<Reward>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Unbondings {
     pub unbondings: Vec<Unbonding>,
 }
