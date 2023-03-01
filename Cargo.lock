@@ -186,6 +186,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "derivative-snip-20-contract"
+version = "1.0.0"
+dependencies = [
+ "base64",
+ "cosmwasm-schema",
+ "schemars",
+ "secret-cosmwasm-std",
+ "secret-cosmwasm-storage",
+ "secret-toolkit",
+ "secret-toolkit-crypto",
+ "serde",
+]
+
+[[package]]
 name = "digest"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -741,20 +755,6 @@ checksum = "02658e48d89f2bec991f9a78e69cfa4c316f8d6a6c4ec12fae1aeb263d486788"
 dependencies = [
  "digest 0.9.0",
  "rand_core 0.6.4",
-]
-
-[[package]]
-name = "snip20-reference-impl"
-version = "1.0.0"
-dependencies = [
- "base64",
- "cosmwasm-schema",
- "schemars",
- "secret-cosmwasm-std",
- "secret-cosmwasm-storage",
- "secret-toolkit",
- "secret-toolkit-crypto",
- "serde",
 ]
 
 [[package]]

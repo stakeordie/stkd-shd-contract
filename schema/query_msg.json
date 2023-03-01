@@ -1,29 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "QueryMsg",
-  "anyOf": [
-    {
-      "type": "object",
-      "required": [
-        "token_info"
-      ],
-      "properties": {
-        "token_info": {
-          "type": "object"
-        }
-      }
-    },
-    {
-      "type": "object",
-      "required": [
-        "token_config"
-      ],
-      "properties": {
-        "token_config": {
-          "type": "object"
-        }
-      }
-    },
+  "oneOf": [
     {
       "type": "object",
       "required": [
@@ -33,153 +11,8 @@
         "contract_status": {
           "type": "object"
         }
-      }
-    },
-    {
-      "type": "object",
-      "required": [
-        "exchange_rate"
-      ],
-      "properties": {
-        "exchange_rate": {
-          "type": "object"
-        }
-      }
-    },
-    {
-      "type": "object",
-      "required": [
-        "allowance"
-      ],
-      "properties": {
-        "allowance": {
-          "type": "object",
-          "required": [
-            "key",
-            "owner",
-            "spender"
-          ],
-          "properties": {
-            "key": {
-              "type": "string"
-            },
-            "owner": {
-              "$ref": "#/definitions/HumanAddr"
-            },
-            "spender": {
-              "$ref": "#/definitions/HumanAddr"
-            }
-          }
-        }
-      }
-    },
-    {
-      "type": "object",
-      "required": [
-        "balance"
-      ],
-      "properties": {
-        "balance": {
-          "type": "object",
-          "required": [
-            "address",
-            "key"
-          ],
-          "properties": {
-            "address": {
-              "$ref": "#/definitions/HumanAddr"
-            },
-            "key": {
-              "type": "string"
-            }
-          }
-        }
-      }
-    },
-    {
-      "type": "object",
-      "required": [
-        "transfer_history"
-      ],
-      "properties": {
-        "transfer_history": {
-          "type": "object",
-          "required": [
-            "address",
-            "key",
-            "page_size"
-          ],
-          "properties": {
-            "address": {
-              "$ref": "#/definitions/HumanAddr"
-            },
-            "key": {
-              "type": "string"
-            },
-            "page": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "uint32",
-              "minimum": 0.0
-            },
-            "page_size": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0.0
-            }
-          }
-        }
-      }
-    },
-    {
-      "type": "object",
-      "required": [
-        "transaction_history"
-      ],
-      "properties": {
-        "transaction_history": {
-          "type": "object",
-          "required": [
-            "address",
-            "key",
-            "page_size"
-          ],
-          "properties": {
-            "address": {
-              "$ref": "#/definitions/HumanAddr"
-            },
-            "key": {
-              "type": "string"
-            },
-            "page": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "format": "uint32",
-              "minimum": 0.0
-            },
-            "page_size": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0.0
-            }
-          }
-        }
-      }
-    },
-    {
-      "type": "object",
-      "required": [
-        "minters"
-      ],
-      "properties": {
-        "minters": {
-          "type": "object"
-        }
-      }
+      },
+      "additionalProperties": false
     },
     {
       "type": "object",
@@ -195,14 +28,15 @@
           ],
           "properties": {
             "permit": {
-              "$ref": "#/definitions/Permit"
+              "$ref": "#/definitions/Permit_for_TokenPermissions"
             },
             "query": {
               "$ref": "#/definitions/QueryWithPermit"
             }
           }
         }
-      }
+      },
+      "additionalProperties": false
     }
   ],
   "definitions": {
@@ -210,34 +44,7 @@
       "description": "Binary is a wrapper around Vec<u8> to add base64 de/serialization with serde. It also adds some helper methods to help encode inline.\n\nThis is only needed as serde-json-{core,wasm} has a horrible encoding for Vec<u8>",
       "type": "string"
     },
-    "HumanAddr": {
-      "type": "string"
-    },
-    "Permission": {
-      "type": "string",
-      "enum": [
-        "allowance",
-        "balance",
-        "history",
-        "owner"
-      ]
-    },
-    "Permit": {
-      "type": "object",
-      "required": [
-        "params",
-        "signature"
-      ],
-      "properties": {
-        "params": {
-          "$ref": "#/definitions/PermitParams"
-        },
-        "signature": {
-          "$ref": "#/definitions/PermitSignature"
-        }
-      }
-    },
-    "PermitParams": {
+    "PermitParams_for_TokenPermissions": {
       "type": "object",
       "required": [
         "allowed_tokens",
@@ -249,7 +56,7 @@
         "allowed_tokens": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/HumanAddr"
+            "type": "string"
           }
         },
         "chain_id": {
@@ -258,7 +65,7 @@
         "permissions": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/Permission"
+            "$ref": "#/definitions/TokenPermissions"
           }
         },
         "permit_name": {
@@ -278,6 +85,21 @@
         },
         "signature": {
           "$ref": "#/definitions/Binary"
+        }
+      }
+    },
+    "Permit_for_TokenPermissions": {
+      "type": "object",
+      "required": [
+        "params",
+        "signature"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/definitions/PermitParams_for_TokenPermissions"
+        },
+        "signature": {
+          "$ref": "#/definitions/PermitSignature"
         }
       }
     },
@@ -303,98 +125,38 @@
       }
     },
     "QueryWithPermit": {
-      "anyOf": [
+      "type": "string",
+      "enum": []
+    },
+    "TokenPermissions": {
+      "oneOf": [
         {
-          "type": "object",
-          "required": [
+          "description": "Allowance for SNIP-20 - Permission to query allowance of the owner & spender",
+          "type": "string",
+          "enum": [
             "allowance"
-          ],
-          "properties": {
-            "allowance": {
-              "type": "object",
-              "required": [
-                "owner",
-                "spender"
-              ],
-              "properties": {
-                "owner": {
-                  "$ref": "#/definitions/HumanAddr"
-                },
-                "spender": {
-                  "$ref": "#/definitions/HumanAddr"
-                }
-              }
-            }
-          }
+          ]
         },
         {
-          "type": "object",
-          "required": [
+          "description": "Balance for SNIP-20 - Permission to query balance",
+          "type": "string",
+          "enum": [
             "balance"
-          ],
-          "properties": {
-            "balance": {
-              "type": "object"
-            }
-          }
+          ]
         },
         {
-          "type": "object",
-          "required": [
-            "transfer_history"
-          ],
-          "properties": {
-            "transfer_history": {
-              "type": "object",
-              "required": [
-                "page_size"
-              ],
-              "properties": {
-                "page": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "format": "uint32",
-                  "minimum": 0.0
-                },
-                "page_size": {
-                  "type": "integer",
-                  "format": "uint32",
-                  "minimum": 0.0
-                }
-              }
-            }
-          }
+          "description": "History for SNIP-20 - Permission to query transfer_history & transaction_hisotry",
+          "type": "string",
+          "enum": [
+            "history"
+          ]
         },
         {
-          "type": "object",
-          "required": [
-            "transaction_history"
-          ],
-          "properties": {
-            "transaction_history": {
-              "type": "object",
-              "required": [
-                "page_size"
-              ],
-              "properties": {
-                "page": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "format": "uint32",
-                  "minimum": 0.0
-                },
-                "page_size": {
-                  "type": "integer",
-                  "format": "uint32",
-                  "minimum": 0.0
-                }
-              }
-            }
-          }
+          "description": "Owner permission indicates that the bearer of this permit should be granted all the access of the creator/signer of the permit.  SNIP-721 uses this to grant viewing access to all data that the permit creator owns and is whitelisted for. For SNIP-721 use, a permit with Owner permission should NEVER be given to anyone else.  If someone wants to share private data, they should whitelist the address they want to share with via a SetWhitelistedApproval tx, and that address will view the data by creating their own permit with Owner permission",
+          "type": "string",
+          "enum": [
+            "owner"
+          ]
         }
       ]
     }
