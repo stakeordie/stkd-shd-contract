@@ -70,20 +70,35 @@
         }
       }
     },
-    "FeeInfo": {
+    "Fee": {
       "type": "object",
       "required": [
         "collector",
-        "fee_rate"
+        "rate"
       ],
       "properties": {
         "collector": {
           "$ref": "#/definitions/Addr"
         },
-        "fee_rate": {
+        "rate": {
           "type": "integer",
           "format": "uint32",
           "minimum": 0.0
+        }
+      }
+    },
+    "FeeInfo": {
+      "type": "object",
+      "required": [
+        "staking_fee",
+        "unbonding_fee"
+      ],
+      "properties": {
+        "staking_fee": {
+          "$ref": "#/definitions/Fee"
+        },
+        "unbonding_fee": {
+          "$ref": "#/definitions/Fee"
         }
       }
     }
