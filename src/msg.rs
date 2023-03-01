@@ -68,6 +68,10 @@ pub struct InstantiateMsg {
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteMsg {
+    UpdateFees {
+        staking_fee: Option<Fee>,
+        unbonding_fee: Option<Fee>,
+    },
     //Receiver interface
     Receive {
         sender: Addr,
@@ -101,6 +105,7 @@ pub enum ExecuteMsg {
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteAnswer {
+    UpdateFees { status: ResponseStatus, fee: FeeInfo },
     CreateViewingKey { key: String },
     SetViewingKey { status: ResponseStatus },
     ChangeAdmin { status: ResponseStatus },
