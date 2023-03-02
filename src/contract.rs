@@ -10,7 +10,7 @@ use secret_toolkit::utils::{pad_handle_result, pad_query_result};
 use secret_toolkit::viewing_key::{ViewingKey, ViewingKeyStore};
 use secret_toolkit_crypto::{sha_256, Prng};
 
-use crate::msg::{Config, StakingInfo};
+use crate::msg::{Config, Fee, FeeInfo, StakingInfo};
 use crate::msg::{
     ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InstantiateMsg, QueryAnswer, QueryMsg,
     ResponseStatus::Success,
@@ -134,6 +134,10 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
     }
 
     let response = match msg {
+        ExecuteMsg::UpdateFees {
+            staking_fee,
+            unbonding_fee,
+        } => update_fees(deps, info, staking_fee, unbonding_fee),
         //Receiver interface
         ExecuteMsg::Receive {
             sender: _,
@@ -166,6 +170,32 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
 }
 
 /************ HANDLES ************/
+/// Updates fee's information if provided
+fn update_fees(
+    deps: DepsMut,
+    info: MessageInfo,
+    staking_fee: Option<Fee>,
+    unbonding_fee: Option<Fee>,
+) -> StdResult<Response> {
+    let constants = CONFIG.load(deps.storage)?;
+    check_if_admin(&constants.admin, &info.sender)?;
+
+    let mut staking_config = STAKING_CONFIG.load(deps.storage)?;
+    let fee_info: FeeInfo = FeeInfo {
+        staking_fee: staking_fee.unwrap_or(staking_config.fee_info.staking_fee),
+        unbonding_fee: unbonding_fee.unwrap_or(staking_config.fee_info.unbonding_fee),
+    };
+    staking_config.fee_info = fee_info.clone();
+    STAKING_CONFIG.save(deps.storage, &staking_config)?;
+
+    Ok(
+        Response::default().set_data(to_binary(&ExecuteAnswer::UpdateFees {
+            status: Success,
+            fee: fee_info,
+        })?),
+    )
+}
+
 /// Try to stake SHD received tokens
 ///
 /// Interacts directly with the Staking contract
@@ -320,7 +350,7 @@ mod tests {
     use cosmwasm_std::testing::*;
     use cosmwasm_std::{from_binary, OwnedDeps, QueryResponse};
 
-    use crate::msg::{ContractInfo as CustomContractInfo, FeeInfo, ResponseStatus, Fee};
+    use crate::msg::{ContractInfo as CustomContractInfo, Fee, FeeInfo, ResponseStatus};
 
     use super::*;
 
@@ -356,11 +386,11 @@ mod tests {
             fee_info: FeeInfo {
                 staking_fee: Fee {
                     collector: Addr::unchecked("collector_address"),
-                    rate: 5
+                    rate: 5,
                 },
                 unbonding_fee: Fee {
                     collector: Addr::unchecked("collector_address"),
-                    rate: 5
+                    rate: 5,
                 },
             },
         };
@@ -658,5 +688,103 @@ mod tests {
             "handle() failed: {}",
             handle_result.err().unwrap()
         );
+    }
+
+    #[test]
+    fn test_update_fees_should_fail_no_admin_sender() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::UpdateFees {
+            staking_fee: None,
+            unbonding_fee: None,
+        };
+        let info = mock_info("not_admin", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(handle_result.is_err());
+        let error = extract_error_msg(handle_result);
+
+        assert_eq!(
+            error,
+            "This is an admin command. Admin commands can only be run from admin address"
+        );
+    }
+
+    #[test]
+    fn test_update_fees_successfully_sender_is_admin_no_new_config_provided() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+        let staking_info_before_tx = STAKING_CONFIG.load(&deps.storage).unwrap();
+        let handle_msg = ExecuteMsg::UpdateFees {
+            staking_fee: None,
+            unbonding_fee: None,
+        };
+        let info = mock_info("admin", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+        let staking_info_after_tx = STAKING_CONFIG.load(&deps.storage).unwrap();
+
+        assert_eq!(
+            staking_info_before_tx.fee_info,
+            staking_info_after_tx.fee_info
+        );
+    }
+
+    #[test]
+    fn test_update_fees_successfully_sender_is_admin() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+        let staking_info_before_tx = STAKING_CONFIG.load(&deps.storage).unwrap();
+        let handle_msg = ExecuteMsg::UpdateFees {
+            staking_fee: Some(Fee {
+                collector: Addr::unchecked("new_collector"),
+                rate: 5_u32,
+            }),
+            unbonding_fee: None,
+        };
+        let info = mock_info("admin", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+        let staking_info_after_tx = STAKING_CONFIG.load(&deps.storage).unwrap();
+
+        assert_ne!(
+            staking_info_before_tx.fee_info,
+            staking_info_after_tx.fee_info
+        );
+
+        let answer: ExecuteAnswer = from_binary(&handle_result.unwrap().data.unwrap()).unwrap();
+        let fee_info_returned = match answer {
+            ExecuteAnswer::UpdateFees { fee, status: _ } => fee,
+            _ => panic!("NOPE"),
+        };
+        let fee_info = STAKING_CONFIG.load(&deps.storage).unwrap().fee_info;
+
+        assert_eq!(fee_info_returned, fee_info)
     }
 }
