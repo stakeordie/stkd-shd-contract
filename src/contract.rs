@@ -200,7 +200,7 @@ fn try_stake(
         return Err(StdError::generic_err("No SHD was sent for staking"));
     }
 
-    let (fee, deposit) = get_fee(staking_config.fee_info.fee_rate, amount)?;
+    let (fee, deposit) = get_fee(staking_config.fee_info.staking_fee.rate, amount)?;
     // get available SHD + available rewards
     let (_, rewards, claiming) = get_delegatable(&deps, &env.contract.address, &staking_config)?;
 
@@ -251,7 +251,7 @@ fn try_stake(
     }
     // send fee to collector
     messages.push(send_msg(
-        staking_config.fee_info.collector.to_string(),
+        staking_config.fee_info.staking_fee.collector.to_string(),
         fee,
         None,
         Some(format!(
