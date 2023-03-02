@@ -2,7 +2,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use cosmwasm_std::{Addr, Binary, StdError, StdResult, Uint256};
+use cosmwasm_std::{Addr, Binary, StdError, StdResult, Uint128, Uint256};
 use secret_toolkit::permit::Permit;
 
 #[derive(Serialize, Debug, Deserialize, Clone, JsonSchema)]
@@ -49,6 +49,10 @@ pub struct StakingInfo {
     // SHD (SNIP-20) information
     pub shade_contract_info: ContractInfo,
     pub shade_contract_vk: String,
+    // Derivative SNIP-20
+    pub derivative_contract_info: ContractInfo,
+    // Amount of SHD unbonded waiting to be claim by users
+    pub unbonded: u128,
     // Fee collector and rate information
     pub fee_info: FeeInfo,
 }
@@ -61,6 +65,7 @@ pub struct InstantiateMsg {
     pub prng_seed: Binary,
     pub staking_contract_info: ContractInfo,
     pub authentication_contract_info: ContractInfo,
+    pub derivative_contract_info: ContractInfo,
     pub shade_contract_info: ContractInfo,
     pub fee_info: FeeInfo,
 }
@@ -105,13 +110,29 @@ pub enum ExecuteMsg {
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteAnswer {
+    Stake {
+        /// amount of SHD staked
+        shd_staked: Uint128,
+        /// amount of derivative token minted
+        tokens_returned: Uint128,
+    },
+    CreateViewingKey {
+        key: String,
+    },
+    SetViewingKey {
+        status: ResponseStatus,
+    },
+    ChangeAdmin {
+        status: ResponseStatus,
+    },
+    SetContractStatus {
+        status: ResponseStatus,
+    },
     UpdateFees { status: ResponseStatus, fee: FeeInfo },
-    CreateViewingKey { key: String },
-    SetViewingKey { status: ResponseStatus },
-    ChangeAdmin { status: ResponseStatus },
-    SetContractStatus { status: ResponseStatus },
     // Permit
-    RevokePermit { status: ResponseStatus },
+    RevokePermit {
+        status: ResponseStatus,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
