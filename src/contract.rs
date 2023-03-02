@@ -445,7 +445,7 @@ fn get_token_info(
 /// * `amount` - amount intended to stake
 /// * `staking_config` - a reference to the StakingInfo
 fn generate_stake_msg(amount: Uint128, staking_config: &StakingInfo) -> StdResult<CosmosMsg> {
-    let memo = Some(format!("Staking {} SHD into staking contract", amount));
+    let memo = Some(to_binary(&format!("Staking {} SHD into staking contract", amount))?.to_base64());
     let msg = Some(to_binary(&Action::Stake {})?);
     send_msg(
         staking_config.staking_contract_info.address.to_string(),
