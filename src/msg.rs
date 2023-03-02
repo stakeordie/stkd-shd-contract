@@ -16,9 +16,16 @@ pub struct Config {
 
 #[cfg_attr(test, derive(Eq, PartialEq))]
 #[derive(Serialize, Deserialize, Clone, JsonSchema, Debug)]
-pub struct FeeInfo {
+pub struct Fee {
     pub collector: Addr,
-    pub fee_rate: u32,
+    pub rate: u32,
+}
+
+#[cfg_attr(test, derive(Eq, PartialEq))]
+#[derive(Serialize, Deserialize, Clone, JsonSchema, Debug)]
+pub struct FeeInfo {
+    pub staking_fee: Fee,
+    pub unbonding_fee: Fee,
 }
 
 #[cfg_attr(test, derive(Eq, PartialEq))]

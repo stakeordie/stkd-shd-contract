@@ -591,7 +591,7 @@ mod tests {
     use cosmwasm_std::testing::*;
     use cosmwasm_std::{from_binary, OwnedDeps, QueryResponse};
 
-    use crate::msg::{ContractInfo as CustomContractInfo, FeeInfo, ResponseStatus};
+    use crate::msg::{ContractInfo as CustomContractInfo, FeeInfo, ResponseStatus, Fee};
 
     use super::*;
 
@@ -630,8 +630,14 @@ mod tests {
                 entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
             },
             fee_info: FeeInfo {
-                collector: Addr::unchecked("collector_address"),
-                fee_rate: 5,
+                staking_fee: Fee {
+                    collector: Addr::unchecked("collector_address"),
+                    rate: 5
+                },
+                unbonding_fee: Fee {
+                    collector: Addr::unchecked("collector_address"),
+                    rate: 5
+                },
             },
         };
 
