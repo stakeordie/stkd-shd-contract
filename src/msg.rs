@@ -128,7 +128,10 @@ pub enum ExecuteAnswer {
     SetContractStatus {
         status: ResponseStatus,
     },
-    UpdateFees { status: ResponseStatus, fee: FeeInfo },
+    UpdateFees {
+        status: ResponseStatus,
+        fee: FeeInfo,
+    },
     // Permit
     RevokePermit {
         status: ResponseStatus,
@@ -139,6 +142,7 @@ pub enum ExecuteAnswer {
 #[cfg_attr(test, derive(Eq, PartialEq))]
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
+    StakingInfo {},
     ContractStatus {},
     WithPermit {
         permit: Permit,
@@ -154,8 +158,26 @@ pub enum QueryWithPermit {}
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryAnswer {
-    ContractStatus { status: ContractStatusLevel },
-    ViewingKeyError { msg: String },
+    StakingInfo {
+        /// unbonding time
+        unbonding_time: Uint128,
+        /// amount of bonded SHD
+        bonded_shd: Uint128,
+        /// amount of available SHD not reserved for mature unbondings
+        available_shd: Uint128,
+        /// unclaimed staking rewards
+        rewards: Uint128,
+        /// total supply of derivative token
+        total_derivative_token_supply: Uint128,
+        /// price of derivative token in SHD to 6 decimals
+        price: Uint128,
+    },
+    ContractStatus {
+        status: ContractStatusLevel,
+    },
+    ViewingKeyError {
+        msg: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, JsonSchema, Debug)]

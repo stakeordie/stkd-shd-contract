@@ -5,7 +5,8 @@ use crate::msg::{
 };
 #[allow(unused_imports)]
 use crate::staking_interface::{
-    balance_query as staking_balance_query, claim_rewards_msg, rewards_query, Action,
+    balance_query as staking_balance_query, claim_rewards_msg, config_query, rewards_query, Action,
+    RawContract, StakingConfig,
 };
 use crate::state::{
     CONFIG, CONTRACT_STATUS, PREFIX_REVOKED_PERMITS, RESPONSE_BLOCK_SIZE, STAKING_CONFIG,
@@ -13,8 +14,8 @@ use crate::state::{
 /// This contract implements SNIP-20 standard:
 /// https://github.com/SecretFoundation/SNIPs/blob/master/SNIP-20.md
 use cosmwasm_std::{
-    entry_point, to_binary, Addr, Binary, CosmosMsg, Deps, DepsMut, Env, MessageInfo, Response,
-    StdError, StdResult, Storage, Uint128, Uint256,
+    entry_point, to_binary, Addr, Binary, CosmosMsg, CustomQuery, Deps, DepsMut, Env, MessageInfo,
+    QuerierWrapper, Response, StdError, StdResult, Storage, Uint128, Uint256,
 };
 use secret_toolkit::permit::RevokedPermits;
 #[allow(unused_imports)]
@@ -167,9 +168,10 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
 }
 
 #[entry_point]
-pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
+pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     pad_query_result(
         match msg {
+            QueryMsg::StakingInfo {} => query_staking_info(&deps, &env),
             QueryMsg::ContractStatus {} => query_contract_status(deps.storage),
             QueryMsg::WithPermit {
                 permit: _,
@@ -233,14 +235,15 @@ fn try_stake(
 
     let (fee, deposit) = get_fee(staking_config.fee_info.staking_fee.rate, amount)?;
     // get available SHD + available rewards
-    let (_, rewards, claiming) = get_delegatable(&deps, &env.contract.address, &staking_config)?;
+    let (_, rewards, claiming) =
+        get_delegatable(deps.querier, &env.contract.address, &staking_config)?;
 
     // get staked SHD
-    let bonded = get_staked_shd(&deps, &env.contract.address, &staking_config)?;
+    let bonded = get_staked_shd(deps.querier, &env.contract.address, &staking_config)?;
     let starting_pool = (claiming + bonded).saturating_sub(deposit.u128() + fee.u128());
 
     let token_info = get_token_info(
-        &deps,
+        deps.querier,
         RESPONSE_BLOCK_SIZE,
         staking_config.shade_contract_info.code_hash.clone(),
         staking_config.shade_contract_info.address.to_string(),
@@ -317,15 +320,16 @@ fn try_stake(
 /// # Arguments
 ///
 /// * `config` - a mutable reference to the StakingConfig
+#[cfg(not(test))]
 #[allow(dead_code)]
 // Allow warn code because mock queries make warnings to show up
-fn get_available_shd(
-    deps: &DepsMut,
+fn get_available_shd<C: CustomQuery>(
+    querier: QuerierWrapper<C>,
     contract_addr: &Addr,
     config: &StakingInfo,
 ) -> StdResult<u128> {
     let balance = balance_query(
-        deps.querier,
+        querier,
         contract_addr.to_string(),
         config.shade_contract_vk.clone(),
         RESPONSE_BLOCK_SIZE,
@@ -336,7 +340,14 @@ fn get_available_shd(
     let available = balance.amount.checked_sub(Uint128::from(config.unbonded))?;
     Ok(available.u128())
 }
-
+#[cfg(test)]
+fn get_available_shd<C: CustomQuery>(
+    _: QuerierWrapper<C>,
+    _: &Addr,
+    _: &StakingInfo,
+) -> StdResult<u128> {
+    Ok(100000000_u128)
+}
 /// Returns StdResult<u128>
 ///
 /// gets the amount of staked SHD
@@ -346,11 +357,15 @@ fn get_available_shd(
 ///
 /// * `config` - a mutable reference to the StakingConfig
 #[cfg(not(test))]
-fn get_staked_shd(deps: &DepsMut, contract_addr: &Addr, config: &StakingInfo) -> StdResult<u128> {
+fn get_staked_shd<C: CustomQuery>(
+    querier: QuerierWrapper<C>,
+    contract_addr: &Addr,
+    config: &StakingInfo,
+) -> StdResult<u128> {
     let balance = staking_balance_query(
         contract_addr.to_string(),
         config.staking_contract_vk.clone(),
-        deps.querier,
+        querier,
         config.staking_contract_info.code_hash.to_string(),
         config.staking_contract_info.address.to_string(),
     )?;
@@ -358,7 +373,11 @@ fn get_staked_shd(deps: &DepsMut, contract_addr: &Addr, config: &StakingInfo) ->
     Ok(balance.amount.u128())
 }
 #[cfg(test)]
-fn get_staked_shd(_: &DepsMut, _: &Addr, _: &StakingInfo) -> StdResult<u128> {
+fn get_staked_shd<C: CustomQuery>(
+    _: QuerierWrapper<C>,
+    _: &Addr,
+    _: &StakingInfo,
+) -> StdResult<u128> {
     Ok(300000000)
 }
 /// Returns StdResult<u128>
@@ -370,11 +389,15 @@ fn get_staked_shd(_: &DepsMut, _: &Addr, _: &StakingInfo) -> StdResult<u128> {
 ///
 /// * `config` - a mutable reference to the StakingConfig
 #[cfg(not(test))]
-fn get_rewards(deps: &DepsMut, contract_addr: &Addr, config: &StakingInfo) -> StdResult<u128> {
+fn get_rewards<C: CustomQuery>(
+    querier: QuerierWrapper<C>,
+    contract_addr: &Addr,
+    config: &StakingInfo,
+) -> StdResult<u128> {
     let rewards = rewards_query(
         contract_addr.to_string(),
         config.staking_contract_vk.clone(),
-        deps.querier,
+        querier,
         config.staking_contract_info.code_hash.to_string(),
         config.staking_contract_info.address.to_string(),
     )?;
@@ -392,8 +415,42 @@ fn get_rewards(deps: &DepsMut, contract_addr: &Addr, config: &StakingInfo) -> St
 #[cfg(test)]
 #[allow(dead_code)]
 // Allow warn code because mock queries make warnings to show up
-fn get_rewards(_: &DepsMut, _: &Addr, _: &StakingInfo) -> StdResult<u128> {
+fn get_rewards<C: CustomQuery>(_: QuerierWrapper<C>, _: &Addr, _: &StakingInfo) -> StdResult<u128> {
     Ok(100000000)
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+// Allow warn code because mock queries make warnings to show up
+fn get_staking_contract_config<C: CustomQuery>(
+    _: QuerierWrapper<C>,
+    _: &StakingInfo,
+) -> StdResult<StakingConfig> {
+    Ok(StakingConfig {
+        admin_auth: RawContract {
+            address: String::from("mock_address"),
+            code_hash: String::from("mock_code_hash"),
+        },
+        query_auth: RawContract {
+            address: String::from("mock_address"),
+            code_hash: String::from("mock_code_hash"),
+        },
+        unbond_period: Uint128::from(300_u32),
+        max_user_pools: Uint128::from(5_u32),
+        reward_cancel_threshold: Uint128::from(0_u32),
+    })
+}
+
+#[cfg(not(test))]
+fn get_staking_contract_config<C: CustomQuery>(
+    querier: QuerierWrapper<C>,
+    staking_info: &StakingInfo,
+) -> StdResult<StakingConfig> {
+    config_query(
+        querier,
+        staking_info.staking_contract_info.code_hash.clone(),
+        staking_info.staking_contract_info.address.to_string(),
+    )
 }
 /// Returns StdResult<u128>
 ///
@@ -405,19 +462,23 @@ fn get_rewards(_: &DepsMut, _: &Addr, _: &StakingInfo) -> StdResult<u128> {
 /// * `contract_addr` - this contract's address
 /// * `staking_config` - a reference to the StakingInfo
 #[cfg(not(test))]
-fn get_delegatable(
-    deps: &DepsMut,
+fn get_delegatable<C: CustomQuery>(
+    querier: QuerierWrapper<C>,
     contract_addr: &Addr,
     staking_config: &StakingInfo,
 ) -> StdResult<(u128, u128, u128)> {
-    let rewards = get_rewards(deps, contract_addr, staking_config)?;
+    let rewards = get_rewards(querier, contract_addr, staking_config)?;
 
-    let available = get_available_shd(deps, contract_addr, staking_config)?;
+    let available = get_available_shd(querier, contract_addr, staking_config)?;
     Ok((available, rewards, rewards + available))
 }
 
 #[cfg(test)]
-fn get_delegatable(_: &DepsMut, _: &Addr, _: &StakingInfo) -> StdResult<(u128, u128, u128)> {
+fn get_delegatable<C: CustomQuery>(
+    _: QuerierWrapper<C>,
+    _: &Addr,
+    _: &StakingInfo,
+) -> StdResult<(u128, u128, u128)> {
     Ok((100000000, 50000000, 100000000 + 50000000))
 }
 /// Returns StdResult<(u128, u128)>
@@ -442,18 +503,25 @@ pub fn get_fee(rate: u32, amount: Uint128) -> StdResult<(Uint128, Uint128)> {
     Ok((fee, remainder))
 }
 #[cfg(not(test))]
-fn get_token_info(
-    deps: &DepsMut,
+fn get_token_info<C: CustomQuery>(
+    querier: QuerierWrapper<C>,
     block_size: usize,
     callback_code_hash: String,
     contract_addr: String,
 ) -> StdResult<TokenInfo> {
-    token_info_query(deps.querier, block_size, callback_code_hash, contract_addr)
+    let token_info = token_info_query(querier, block_size, callback_code_hash, contract_addr)?;
+    if token_info.total_supply.is_none() {
+        return Err(StdError::generic_err(
+            "Token supply must be public on derivative token",
+        ));
+    }
+
+    Ok(token_info)
 }
 
 #[cfg(test)]
-fn get_token_info(
-    _deps: &DepsMut,
+fn get_token_info<C: CustomQuery>(
+    _querier: QuerierWrapper<C>,
     _block_size: usize,
     _callback_code_hash: String,
     _contract_addr: String,
@@ -462,7 +530,7 @@ fn get_token_info(
         name: String::from("STKD-SHD"),
         symbol: String::from("STKDSHD"),
         decimals: 6,
-        total_supply: None,
+        total_supply: Some(Uint128::zero()),
     })
 }
 
@@ -476,7 +544,8 @@ fn get_token_info(
 /// * `amount` - amount intended to stake
 /// * `staking_config` - a reference to the StakingInfo
 fn generate_stake_msg(amount: Uint128, staking_config: &StakingInfo) -> StdResult<CosmosMsg> {
-    let memo = Some(to_binary(&format!("Staking {} SHD into staking contract", amount))?.to_base64());
+    let memo =
+        Some(to_binary(&format!("Staking {} SHD into staking contract", amount))?.to_base64());
     let msg = Some(to_binary(&Action::Stake {})?);
     send_msg(
         staking_config.staking_contract_info.address.to_string(),
@@ -615,6 +684,44 @@ fn query_contract_status(storage: &dyn Storage) -> StdResult<Binary> {
     })
 }
 
+fn query_staking_info(deps: &Deps, env: &Env) -> StdResult<Binary> {
+    let staking_config = STAKING_CONFIG.load(deps.storage)?;
+
+    let derivative_info = get_token_info(
+        deps.querier,
+        RESPONSE_BLOCK_SIZE,
+        staking_config.derivative_contract_info.code_hash.clone(),
+        staking_config.derivative_contract_info.address.to_string(),
+    )?;
+    let bonded = get_staked_shd(deps.querier, &env.contract.address, &staking_config)?;
+    let rewards = get_rewards(deps.querier, &env.contract.address, &staking_config)?;
+    let available = get_available_shd(deps.querier, &env.contract.address, &staking_config)?;
+
+    let total_supply = derivative_info.total_supply.unwrap_or(Uint128::zero());
+
+    let pool = bonded + rewards + available;
+    let price = if total_supply == Uint128::zero() || pool == 0 {
+        Uint128::from(10_u128.pow(derivative_info.decimals as u32))
+    } else {
+        // unwrap is ok because multiplying a u128 by 1 mill can not overflow u256
+        let number = Uint256::from(pool)
+            .checked_mul(Uint256::from(10_u128.pow(derivative_info.decimals as u32)))
+            .unwrap();
+        // unwrap is ok because we already checked if the total supply is 0
+        Uint128::try_from(number.checked_div(Uint256::from(total_supply)).unwrap())?
+    };
+
+    let staking_contract_config = get_staking_contract_config(deps.querier, &staking_config)?;
+
+    to_binary(&QueryAnswer::StakingInfo {
+        unbonding_time: staking_contract_config.unbond_period,
+        bonded_shd: Uint128::from(bonded),
+        available_shd: Uint128::from(available),
+        rewards: Uint128::from(rewards),
+        total_derivative_token_supply: total_supply,
+        price,
+    })
+}
 #[cfg(test)]
 mod tests {
     use std::any::Any;
@@ -1099,5 +1206,49 @@ mod tests {
             other => panic!("Unexpected: {:?}", other),
         };
         assert_eq!(tokens_returned, expected_tokens_return)
+    }
+
+    #[test]
+    fn test_staking_info_query() {
+        let (init_result, deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+        let query_msg = QueryMsg::StakingInfo {};
+        let query_result = query(deps.as_ref(), mock_env(), query_msg);
+        let (
+            unbonding_time,
+            bonded_shd,
+            available_shd,
+            rewards,
+            total_derivative_token_supply,
+            price,
+        ) = match from_binary(&query_result.unwrap()).unwrap() {
+            QueryAnswer::StakingInfo {
+                unbonding_time,
+                bonded_shd,
+                available_shd,
+                rewards,
+                total_derivative_token_supply,
+                price,
+            } => (
+                unbonding_time,
+                bonded_shd,
+                available_shd,
+                rewards,
+                total_derivative_token_supply,
+                price,
+            ),
+            other => panic!("Unexpected: {:?}", other),
+        };
+
+        assert_eq!(unbonding_time, Uint128::from(300_u32));
+        assert_eq!(bonded_shd, Uint128::from(300000000_u128));
+        assert_eq!(available_shd, Uint128::from(100000000_u128));
+        assert_eq!(rewards, Uint128::from(100000000_u128));
+        assert_eq!(total_derivative_token_supply, Uint128::zero());
+        assert_eq!(price, Uint128::from(1000000_u32));
     }
 }
