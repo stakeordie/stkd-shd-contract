@@ -98,6 +98,24 @@ pub fn compound_msg(callback_code_hash: String, contract_addr: String) -> StdRes
 }
 
 // QUERIES
+
+#[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct RawContract {
+    pub address: String,
+    pub code_hash: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct StakingConfig {
+    pub admin_auth: RawContract,
+    pub query_auth: RawContract,
+    pub unbond_period: Uint128,
+    pub max_user_pools: Uint128,
+    pub reward_cancel_threshold: Uint128,
+}
+
 #[derive(Serialize, Clone, Debug, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct ViewingKey {
@@ -116,7 +134,8 @@ pub struct Auth {
 #[derive(Serialize, Clone, Debug, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum StakingQuery {
-    Balance { auth: Auth },
+    Config {},
+    Staked { auth: Auth },
     Rewards { auth: Auth },
     Unbonding { auth: Auth },
 }
@@ -124,7 +143,8 @@ pub enum StakingQuery {
 impl fmt::Display for StakingQuery {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            StakingQuery::Balance { .. } => write!(f, "Balance"),
+            StakingQuery::Config {} => write!(f, "Config"),
+            StakingQuery::Staked { .. } => write!(f, "Staked"),
             StakingQuery::Rewards { .. } => write!(f, "Rewards"),
             StakingQuery::Unbonding { .. } => write!(f, "Unbonding"),
         }
@@ -172,17 +192,17 @@ pub struct Reward {
     pub amount: Uint128,
 }
 
-/// enum used to screen for a ViewingKeyError response from an authenticated query
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AuthenticatedQueryResponse {
-    Balance { amount: Uint128 },
+pub enum QueryResponse {
+    Config { config: StakingConfig },
+    Staked { amount: Uint128 },
     Rewards { rewards: Vec<Reward> },
     Unbonding { unbondings: Vec<Unbonding> },
     ViewingKeyError { msg: String },
 }
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct Balance {
+pub struct Staked {
     pub amount: Uint128,
 }
 
@@ -210,17 +230,15 @@ pub fn balance_query<C: CustomQuery>(
     querier: QuerierWrapper<C>,
     callback_code_hash: String,
     contract_addr: String,
-) -> StdResult<Balance> {
+) -> StdResult<Staked> {
     let auth = Auth {
         viewing_key: ViewingKey { address, key },
     };
-    let answer: AuthenticatedQueryResponse =
-        StakingQuery::Balance { auth }.query(querier, callback_code_hash, contract_addr)?;
+    let answer: QueryResponse =
+        StakingQuery::Staked { auth }.query(querier, callback_code_hash, contract_addr)?;
     match answer {
-        AuthenticatedQueryResponse::Balance { amount } => Ok(Balance { amount }),
-        AuthenticatedQueryResponse::ViewingKeyError { .. } => {
-            Err(StdError::generic_err("unauthorized"))
-        }
+        QueryResponse::Staked { amount } => Ok(Staked { amount }),
+        QueryResponse::ViewingKeyError { .. } => Err(StdError::generic_err("unauthorized")),
         _ => Err(StdError::generic_err("Invalid Balance query response")),
     }
 }
@@ -243,13 +261,11 @@ pub fn rewards_query<C: CustomQuery>(
     let auth = Auth {
         viewing_key: ViewingKey { address, key },
     };
-    let answer: AuthenticatedQueryResponse =
+    let answer: QueryResponse =
         StakingQuery::Rewards { auth }.query(querier, callback_code_hash, contract_addr)?;
     match answer {
-        AuthenticatedQueryResponse::Rewards { rewards } => Ok(Rewards { rewards }),
-        AuthenticatedQueryResponse::ViewingKeyError { .. } => {
-            Err(StdError::generic_err("unauthorized"))
-        }
+        QueryResponse::Rewards { rewards } => Ok(Rewards { rewards }),
+        QueryResponse::ViewingKeyError { .. } => Err(StdError::generic_err("unauthorized")),
         _ => Err(StdError::generic_err("Invalid Rewards query response")),
     }
 }
@@ -272,13 +288,24 @@ pub fn unbondings_query<C: CustomQuery>(
     let auth = Auth {
         viewing_key: ViewingKey { address, key },
     };
-    let answer: AuthenticatedQueryResponse =
+    let answer: QueryResponse =
         StakingQuery::Rewards { auth }.query(querier, callback_code_hash, contract_addr)?;
     match answer {
-        AuthenticatedQueryResponse::Unbonding { unbondings } => Ok(Unbondings { unbondings }),
-        AuthenticatedQueryResponse::ViewingKeyError { .. } => {
-            Err(StdError::generic_err("unauthorized"))
-        }
+        QueryResponse::Unbonding { unbondings } => Ok(Unbondings { unbondings }),
+        QueryResponse::ViewingKeyError { .. } => Err(StdError::generic_err("unauthorized")),
+        _ => Err(StdError::generic_err("Invalid Rewards query response")),
+    }
+}
+
+pub fn config_query<C: CustomQuery>(
+    querier: QuerierWrapper<C>,
+    callback_code_hash: String,
+    contract_addr: String,
+) -> StdResult<StakingConfig> {
+    let answer: QueryResponse =
+        StakingQuery::Config {}.query(querier, callback_code_hash, contract_addr)?;
+    match answer {
+        QueryResponse::Config { config } => Ok(config),
         _ => Err(StdError::generic_err("Invalid Rewards query response")),
     }
 }
