@@ -235,8 +235,7 @@ fn try_stake(
 
     let (fee, deposit) = get_fee(staking_config.fee_info.staking_fee.rate, amount)?;
     // get available SHD + available rewards
-    let (_, rewards, claiming) =
-        get_delegatable(deps.querier, &env.contract.address, &staking_config)?;
+    let (_, _, claiming) = get_delegatable(deps.querier, &env.contract.address, &staking_config)?;
 
     // get staked SHD
     let bonded = get_staked_shd(deps.querier, &env.contract.address, &staking_config)?;
@@ -277,12 +276,6 @@ fn try_stake(
         staking_config.derivative_contract_info.address.to_string(),
     )?];
 
-    if rewards > 0 {
-        messages.push(claim_rewards_msg(
-            staking_config.staking_contract_info.code_hash.clone(),
-            staking_config.staking_contract_info.address.to_string(),
-        )?);
-    }
     // send fee to collector
     messages.push(send_msg(
         staking_config.fee_info.staking_fee.collector.to_string(),
@@ -301,7 +294,7 @@ fn try_stake(
     // Stake available SHD
     if claiming > 0 {
         let staking = Uint128::from(claiming.saturating_sub(fee.u128()));
-        messages.push(generate_stake_msg(staking, &staking_config)?);
+        messages.push(generate_stake_msg(staking, Some(true), &staking_config)?);
     }
 
     Ok(Response::new()
@@ -543,10 +536,14 @@ fn get_token_info<C: CustomQuery>(
 ///
 /// * `amount` - amount intended to stake
 /// * `staking_config` - a reference to the StakingInfo
-fn generate_stake_msg(amount: Uint128, staking_config: &StakingInfo) -> StdResult<CosmosMsg> {
+fn generate_stake_msg(
+    amount: Uint128,
+    compound: Option<bool>,
+    staking_config: &StakingInfo,
+) -> StdResult<CosmosMsg> {
     let memo =
         Some(to_binary(&format!("Staking {} SHD into staking contract", amount))?.to_base64());
-    let msg = Some(to_binary(&Action::Stake {})?);
+    let msg = Some(to_binary(&Action::Stake { compound })?);
     send_msg(
         staking_config.staking_contract_info.address.to_string(),
         amount,

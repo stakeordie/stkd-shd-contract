@@ -1,4 +1,4 @@
-use crate::state::RESPONSE_BLOCK_SIZE;
+use crate::{msg::ResponseStatus, state::RESPONSE_BLOCK_SIZE};
 use core::fmt;
 use cosmwasm_std::{
     to_binary, Addr, CosmosMsg, CustomQuery, QuerierWrapper, QueryRequest, StdError, StdResult,
@@ -13,7 +13,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub enum Action {
     // Messages allowed when sending SHD to Staking contract
     // Deposit rewards to be distributed
-    Stake {},
+    Stake { compound: Option<bool> },
 }
 
 // Staking contract handles
@@ -23,11 +23,21 @@ pub enum StakingMsg {
     // Claims rewards generated
     Claim {},
     // Unbond X amount
-    Unbond { amount: Uint128 },
+    Unbond {
+        amount: Uint128,
+        compound: Option<bool>,
+    },
     // Claims mature unbondings
-    Withdraw {},
+    Withdraw {
+        ids: Option<Vec<Uint128>>,
+    },
     // Claims available rewards and re-stake them
     Compound {},
+    TransferStake {
+        amount: Uint128,
+        recipient: String,
+        compound: Option<bool>,
+    },
 }
 
 impl StakingMsg {
@@ -75,8 +85,9 @@ pub fn unbond_msg(
     amount: Uint128,
     callback_code_hash: String,
     contract_addr: String,
+    compound: Option<bool>,
 ) -> StdResult<CosmosMsg> {
-    StakingMsg::Unbond { amount }.to_cosmos_msg(callback_code_hash, contract_addr)
+    StakingMsg::Unbond { amount, compound }.to_cosmos_msg(callback_code_hash, contract_addr)
 }
 
 /// Returns a StdResult<CosmosMsg> used to execute Withdraw
@@ -84,8 +95,12 @@ pub fn unbond_msg(
 /// # Arguments
 /// * `callback_code_hash` - String holding the code hash of the contract being called
 /// * `contract_addr` - address of the contract being called
-pub fn withdraw_msg(callback_code_hash: String, contract_addr: String) -> StdResult<CosmosMsg> {
-    StakingMsg::Withdraw {}.to_cosmos_msg(callback_code_hash, contract_addr)
+pub fn withdraw_msg(
+    callback_code_hash: String,
+    contract_addr: String,
+    ids: Option<Vec<Uint128>>,
+) -> StdResult<CosmosMsg> {
+    StakingMsg::Withdraw { ids }.to_cosmos_msg(callback_code_hash, contract_addr)
 }
 
 /// Returns a StdResult<CosmosMsg> used to execute Compound
@@ -135,9 +150,16 @@ pub struct Auth {
 #[serde(rename_all = "snake_case")]
 pub enum StakingQuery {
     Config {},
-    Staked { auth: Auth },
-    Rewards { auth: Auth },
-    Unbonding { auth: Auth },
+    Staked {
+        auth: Auth,
+    },
+    Rewards {
+        auth: Auth,
+    },
+    Unbonding {
+        auth: Auth,
+        ids: Option<Vec<Uint128>>,
+    },
 }
 
 impl fmt::Display for StakingQuery {
@@ -181,8 +203,9 @@ impl StakingQuery {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Unbonding {
-    pub token: Addr,
+    pub id: Uint128,
     pub amount: Uint128,
+    pub complete: Uint128,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -281,6 +304,7 @@ pub fn rewards_query<C: CustomQuery>(
 pub fn unbondings_query<C: CustomQuery>(
     address: String,
     key: String,
+    ids: Option<Vec<Uint128>>,
     querier: QuerierWrapper<C>,
     callback_code_hash: String,
     contract_addr: String,
@@ -289,11 +313,11 @@ pub fn unbondings_query<C: CustomQuery>(
         viewing_key: ViewingKey { address, key },
     };
     let answer: QueryResponse =
-        StakingQuery::Rewards { auth }.query(querier, callback_code_hash, contract_addr)?;
+        StakingQuery::Unbonding { auth, ids }.query(querier, callback_code_hash, contract_addr)?;
     match answer {
         QueryResponse::Unbonding { unbondings } => Ok(Unbondings { unbondings }),
         QueryResponse::ViewingKeyError { .. } => Err(StdError::generic_err("unauthorized")),
-        _ => Err(StdError::generic_err("Invalid Rewards query response")),
+        _ => Err(StdError::generic_err("Invalid Unbonding query response")),
     }
 }
 
@@ -308,4 +332,16 @@ pub fn config_query<C: CustomQuery>(
         QueryResponse::Config { config } => Ok(config),
         _ => Err(StdError::generic_err("Invalid Rewards query response")),
     }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct Unbond {
+    id: Uint128,
+    status: ResponseStatus,
+}
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct UnbondResponse {
+    unbond: Unbond,
 }
