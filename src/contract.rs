@@ -27,7 +27,10 @@ use secret_toolkit::snip20::{
 use secret_toolkit::utils::{pad_handle_result, pad_query_result};
 use secret_toolkit::viewing_key::{ViewingKey, ViewingKeyStore};
 use secret_toolkit_crypto::{sha_256, Prng};
+#[allow(unused_imports)]
 use shade_protocol::admin::helpers::{validate_admin, AdminPermissions};
+#[allow(unused_imports)]
+use shade_protocol::Contract;
 
 use crate::msg::{Fee, FeeInfo};
 
@@ -188,7 +191,7 @@ fn update_fees(
     unbonding_fee: Option<Fee>,
 ) -> StdResult<Response> {
     let constants = CONFIG.load(deps.storage)?;
-    validate_admin(
+    check_if_admin(
         &deps.querier,
         AdminPermissions::DerivativeAdmin,
         info.sender.to_string(),
@@ -535,6 +538,29 @@ fn get_token_info<C: CustomQuery>(
         total_supply: Some(Uint128::zero()),
     })
 }
+#[cfg(not(test))]
+fn check_if_admin(
+    querier: &QuerierWrapper,
+    permission: AdminPermissions,
+    user: String,
+    admin_auth: &Contract,
+) -> StdResult<()> {
+    validate_admin(&querier, permission, user, &admin_auth)
+}
+
+#[cfg(test)]
+fn check_if_admin(
+    _: &QuerierWrapper,
+    _: AdminPermissions,
+    user: String,
+    _: &Contract,
+) -> StdResult<()> {
+    if user != String::from("admin"){
+        return Err(StdError::generic_err("This is an admin command. Admin commands can only be run from admin address"));
+    }
+
+    Ok(())
+}
 
 /// Returns StdResult<CosmoMsg>
 ///
@@ -593,7 +619,7 @@ fn set_contract_status(
     status_level: ContractStatusLevel,
 ) -> StdResult<Response> {
     let constants = CONFIG.load(deps.storage)?;
-    validate_admin(
+    check_if_admin(
         &deps.querier,
         AdminPermissions::DerivativeAdmin,
         info.sender.to_string(),
