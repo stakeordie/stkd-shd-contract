@@ -4,14 +4,15 @@ use serde::{Deserialize, Serialize};
 
 use cosmwasm_std::{Addr, Binary, StdError, StdResult, Uint128, Uint256};
 use secret_toolkit::permit::Permit;
+use shade_protocol::Contract;
 
 #[derive(Serialize, Debug, Deserialize, Clone, JsonSchema)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
 pub struct Config {
     pub name: String,
-    pub admin: Addr,
     pub symbol: String,
     pub contract_address: Addr,
+    pub admin_contract_info: Contract,
 }
 
 #[cfg_attr(test, derive(Eq, PartialEq))]
@@ -60,13 +61,13 @@ pub struct StakingInfo {
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct InstantiateMsg {
     pub name: String,
-    pub admin: Option<String>,
     pub symbol: String,
     pub prng_seed: Binary,
     pub staking_contract_info: ContractInfo,
     pub authentication_contract_info: ContractInfo,
     pub derivative_contract_info: ContractInfo,
     pub shade_contract_info: ContractInfo,
+    pub admin_contract_info: Contract,
     pub fee_info: FeeInfo,
 }
 
@@ -84,10 +85,6 @@ pub enum ExecuteMsg {
         amount: Uint256,
         #[serde(default)]
         msg: Option<Binary>,
-    },
-    ChangeAdmin {
-        address: String,
-        padding: Option<String>,
     },
     SetContractStatus {
         level: ContractStatusLevel,

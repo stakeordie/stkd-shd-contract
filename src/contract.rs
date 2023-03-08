@@ -3,6 +3,7 @@ use crate::msg::{
     ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InstantiateMsg, QueryAnswer, QueryMsg,
     ResponseStatus::Success,
 };
+
 #[allow(unused_imports)]
 use crate::staking_interface::{
     balance_query as staking_balance_query, claim_rewards_msg, config_query, rewards_query, Action,
@@ -26,6 +27,10 @@ use secret_toolkit::snip20::{
 use secret_toolkit::utils::{pad_handle_result, pad_query_result};
 use secret_toolkit::viewing_key::{ViewingKey, ViewingKeyStore};
 use secret_toolkit_crypto::{sha_256, Prng};
+#[allow(unused_imports)]
+use shade_protocol::admin::helpers::{validate_admin, AdminPermissions};
+#[allow(unused_imports)]
+use shade_protocol::Contract;
 
 use crate::msg::{Fee, FeeInfo};
 
@@ -47,18 +52,14 @@ pub fn instantiate(
             "Ticker symbol is not in expected format [A-Z]{3,20}",
         ));
     }
-    let admin = match msg.admin {
-        Some(admin_addr) => deps.api.addr_validate(admin_addr.as_str())?,
-        None => info.sender.clone(),
-    };
 
     CONFIG.save(
         deps.storage,
         &Config {
-            admin,
             name: msg.name,
             symbol: msg.symbol,
             contract_address: env.contract.address.clone(),
+            admin_contract_info: msg.admin_contract_info,
         },
     )?;
     CONTRACT_STATUS.save(deps.storage, &ContractStatusLevel::NormalRun)?;
@@ -159,7 +160,6 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
         } => try_stake(deps, env, info, from, amount, msg),
         ExecuteMsg::CreateViewingKey { entropy, .. } => try_create_key(deps, env, info, entropy),
         ExecuteMsg::SetViewingKey { key, .. } => try_set_key(deps, info, key),
-        ExecuteMsg::ChangeAdmin { address, .. } => change_admin(deps, info, address),
         ExecuteMsg::SetContractStatus { level, .. } => set_contract_status(deps, info, level),
         ExecuteMsg::RevokePermit { permit_name, .. } => revoke_permit(deps, info, permit_name),
     };
@@ -191,7 +191,12 @@ fn update_fees(
     unbonding_fee: Option<Fee>,
 ) -> StdResult<Response> {
     let constants = CONFIG.load(deps.storage)?;
-    check_if_admin(&constants.admin, &info.sender)?;
+    check_if_admin(
+        &deps.querier,
+        AdminPermissions::DerivativeAdmin,
+        info.sender.to_string(),
+        &constants.admin_contract_info,
+    )?;
 
     let mut staking_config = STAKING_CONFIG.load(deps.storage)?;
     let fee_info: FeeInfo = FeeInfo {
@@ -526,6 +531,29 @@ fn get_token_info<C: CustomQuery>(
         total_supply: Some(Uint128::zero()),
     })
 }
+#[cfg(not(test))]
+fn check_if_admin(
+    querier: &QuerierWrapper,
+    permission: AdminPermissions,
+    user: String,
+    admin_auth: &Contract,
+) -> StdResult<()> {
+    validate_admin(&querier, permission, user, &admin_auth)
+}
+
+#[cfg(test)]
+fn check_if_admin(
+    _: &QuerierWrapper,
+    _: AdminPermissions,
+    user: String,
+    _: &Contract,
+) -> StdResult<()> {
+    if user != String::from("admin"){
+        return Err(StdError::generic_err("This is an admin command. Admin commands can only be run from admin address"));
+    }
+
+    Ok(())
+}
 
 /// Returns StdResult<CosmoMsg>
 ///
@@ -554,18 +582,6 @@ fn generate_stake_msg(
         staking_config.shade_contract_info.code_hash.clone(),
         staking_config.shade_contract_info.address.to_string(),
     )
-}
-
-fn change_admin(deps: DepsMut, info: MessageInfo, address: String) -> StdResult<Response> {
-    let address = deps.api.addr_validate(address.as_str())?;
-
-    let mut constants = CONFIG.load(deps.storage)?;
-    check_if_admin(&constants.admin, &info.sender)?;
-
-    constants.admin = address;
-    CONFIG.save(deps.storage, &constants)?;
-
-    Ok(Response::new().set_data(to_binary(&ExecuteAnswer::ChangeAdmin { status: Success })?))
 }
 
 pub fn try_set_key(deps: DepsMut, info: MessageInfo, key: String) -> StdResult<Response> {
@@ -600,7 +616,12 @@ fn set_contract_status(
     status_level: ContractStatusLevel,
 ) -> StdResult<Response> {
     let constants = CONFIG.load(deps.storage)?;
-    check_if_admin(&constants.admin, &info.sender)?;
+    check_if_admin(
+        &deps.querier,
+        AdminPermissions::DerivativeAdmin,
+        info.sender.to_string(),
+        &constants.admin_contract_info,
+    )?;
 
     CONTRACT_STATUS.save(deps.storage, &status_level)?;
 
@@ -611,15 +632,6 @@ fn set_contract_status(
     )
 }
 
-fn check_if_admin(config_admin: &Addr, account: &Addr) -> StdResult<()> {
-    if config_admin != account {
-        return Err(StdError::generic_err(
-            "This is an admin command. Admin commands can only be run from admin address",
-        ));
-    }
-
-    Ok(())
-}
 fn revoke_permit(deps: DepsMut, info: MessageInfo, permit_name: String) -> StdResult<Response> {
     RevokedPermits::revoke_permit(
         deps.storage,
@@ -725,6 +737,7 @@ mod tests {
 
     use cosmwasm_std::testing::*;
     use cosmwasm_std::{from_binary, OwnedDeps, QueryResponse};
+    use shade_protocol::Contract;
 
     use crate::msg::{ContractInfo as CustomContractInfo, Fee, FeeInfo, ResponseStatus};
 
@@ -741,7 +754,6 @@ mod tests {
 
         let init_msg = InstantiateMsg {
             name: "sec-sec".to_string(),
-            admin: Some("admin".to_string()),
             symbol: "SECSEC".to_string(),
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
             derivative_contract_info: CustomContractInfo {
@@ -763,6 +775,10 @@ mod tests {
                 address: Addr::unchecked("shade_contract_info_address"),
                 code_hash: String::from("shade_contract_info_code_hash"),
                 entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
+            },
+            admin_contract_info: Contract {
+                address: Addr::unchecked("shade_contract_info_address"),
+                code_hash: String::from("shade_contract_info_code_hash"),
             },
             fee_info: FeeInfo {
                 staking_fee: Fee {
@@ -867,7 +883,6 @@ mod tests {
             ContractStatusLevel::NormalRun
         );
         assert_eq!(constants.name, "sec-sec".to_string());
-        assert_eq!(constants.admin, Addr::unchecked("admin".to_string()));
         assert_eq!(constants.symbol, "SECSEC".to_string());
 
         ViewingKey::set(deps.as_mut().storage, "lebron", "lolz fun yay");
@@ -962,33 +977,6 @@ mod tests {
 
         let result = ViewingKey::check(&deps.storage, "bob", actual_vk.as_str());
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_handle_change_admin() {
-        let (init_result, mut deps) = init_helper();
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let handle_msg = ExecuteMsg::ChangeAdmin {
-            address: "bob".to_string(),
-            padding: None,
-        };
-        let info = mock_info("admin", &[]);
-
-        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
-
-        assert!(
-            handle_result.is_ok(),
-            "handle() failed: {}",
-            handle_result.err().unwrap()
-        );
-
-        let admin = CONFIG.load(&deps.storage).unwrap().admin;
-        assert_eq!(admin, Addr::unchecked("bob".to_string()));
     }
 
     #[test]
