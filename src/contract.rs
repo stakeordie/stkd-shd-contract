@@ -317,8 +317,8 @@ fn try_stake(
     )?);
 
     // Stake available SHD
-    if claiming > 0 {
-        let staking = Uint128::from(claiming.saturating_sub(fee.u128()));
+    if deposit > Uint128::zero() {
+        let staking = deposit.saturating_sub(fee);
         messages.push(generate_stake_msg(staking, Some(true), &staking_config)?);
     }
 
