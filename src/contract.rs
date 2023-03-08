@@ -4,6 +4,7 @@ use crate::msg::{
     ResponseStatus::Success,
 };
 
+use crate::staking_interface::unbond_msg;
 #[allow(unused_imports)]
 use crate::staking_interface::{
     balance_query as staking_balance_query, claim_rewards_msg, config_query, rewards_query, Action,
@@ -147,6 +148,7 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
     }
 
     let response = match msg {
+        ExecuteMsg::PanicUnbond { amount } => try_panic_unbond(deps, info, amount),
         ExecuteMsg::UpdateFees {
             staking_fee,
             unbonding_fee,
@@ -183,6 +185,24 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
 }
 
 /************ HANDLES ************/
+fn try_panic_unbond(deps: DepsMut, info: MessageInfo, amount: Uint128) -> StdResult<Response> {
+    let staking_config = STAKING_CONFIG.load(deps.storage)?;
+    let constants = CONFIG.load(deps.storage)?;
+    check_if_admin(
+        &deps.querier,
+        AdminPermissions::DerivativeAdmin,
+        info.sender.to_string(),
+        &constants.admin_contract_info,
+    )?;
+    let msgs = vec![unbond_msg(
+        amount,
+        staking_config.staking_contract_info.code_hash,
+        staking_config.staking_contract_info.address.to_string(),
+        Some(false),
+    )?];
+    Ok(Response::default().add_messages(msgs))
+}
+
 /// Updates fee's information if provided
 fn update_fees(
     deps: DepsMut,
@@ -548,8 +568,10 @@ fn check_if_admin(
     user: String,
     _: &Contract,
 ) -> StdResult<()> {
-    if user != String::from("admin"){
-        return Err(StdError::generic_err("This is an admin command. Admin commands can only be run from admin address"));
+    if user != String::from("admin") {
+        return Err(StdError::generic_err(
+            "This is an admin command. Admin commands can only be run from admin address",
+        ));
     }
 
     Ok(())
@@ -1235,5 +1257,67 @@ mod tests {
         assert_eq!(rewards, Uint128::from(100000000_u128));
         assert_eq!(total_derivative_token_supply, Uint128::zero());
         assert_eq!(price, Uint128::from(1000000_u32));
+    }
+
+    #[test]
+    fn test_handle_panic_withdraw_not_admin_user() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::PanicUnbond {
+            amount: Uint128::from(100000000_u128),
+        };
+        let info = mock_info("bob", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(handle_result.is_err());
+        let error = extract_error_msg(handle_result);
+
+        assert_eq!(
+            error,
+            "This is an admin command. Admin commands can only be run from admin address"
+        );
+    }
+
+    #[test]
+    fn test_handle_panic_unbond_msg() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::PanicUnbond {
+            amount: Uint128::from(100000000_u128),
+        };
+        let info = mock_info("admin", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+
+        let staking_config = STAKING_CONFIG.load(&deps.storage).unwrap();
+
+        let msgs = vec![unbond_msg(
+            Uint128::from(100000000_u128),
+            staking_config.staking_contract_info.code_hash,
+            staking_config.staking_contract_info.address.to_string(),
+            Some(false),
+        )
+        .unwrap()];
+
+        assert_eq!(
+            handle_result.unwrap(),
+            Response::default().add_messages(msgs)
+        );
     }
 }

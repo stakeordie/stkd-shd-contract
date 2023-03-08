@@ -78,6 +78,9 @@ pub enum ExecuteMsg {
         staking_fee: Option<Fee>,
         unbonding_fee: Option<Fee>,
     },
+    PanicUnbond {
+        amount: Uint128,
+    },
     //Receiver interface
     Receive {
         sender: Addr,
