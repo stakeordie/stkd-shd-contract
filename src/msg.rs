@@ -20,6 +20,7 @@ pub struct Config {
 pub struct Fee {
     pub collector: Addr,
     pub rate: u32,
+    pub decimal_places: u8,
 }
 
 #[cfg_attr(test, derive(Eq, PartialEq))]
@@ -140,6 +141,7 @@ pub enum ExecuteAnswer {
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
     StakingInfo {},
+    FeeInfo {},
     ContractStatus {},
     WithPermit {
         permit: Permit,
@@ -168,6 +170,10 @@ pub enum QueryAnswer {
         total_derivative_token_supply: Uint128,
         /// price of derivative token in SHD to 6 decimals
         price: Uint128,
+    },
+    FeeInfo {
+        staking_fee: Fee,
+        unbonding_fee: Fee,
     },
     ContractStatus {
         status: ContractStatusLevel,
