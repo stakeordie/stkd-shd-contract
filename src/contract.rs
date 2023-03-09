@@ -539,7 +539,7 @@ fn check_if_admin(
     user: String,
     admin_auth: &Contract,
 ) -> StdResult<()> {
-    validate_admin(&querier, permission, user, &admin_auth)
+    validate_admin(querier, permission, user, admin_auth)
 }
 
 #[cfg(test)]
@@ -1266,7 +1266,7 @@ mod tests {
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let query_msg = QueryMsg::FeeInfo { };
+        let query_msg = QueryMsg::FeeInfo {};
         let query_result = query(deps.as_ref(), mock_env(), query_msg);
         let (staking_fee, unbonding_fee) = match from_binary(&query_result.unwrap()).unwrap() {
             QueryAnswer::FeeInfo {
