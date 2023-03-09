@@ -174,6 +174,7 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     pad_query_result(
         match msg {
             QueryMsg::StakingInfo {} => query_staking_info(&deps, &env),
+            QueryMsg::FeeInfo {} => query_fee_info(&deps),
             QueryMsg::ContractStatus {} => query_contract_status(deps.storage),
             QueryMsg::WithPermit {
                 permit: _,
@@ -258,7 +259,7 @@ fn try_stake(
         return Err(StdError::generic_err("No SHD was sent for staking"));
     }
 
-    let (fee, deposit) = get_fee(staking_config.fee_info.staking_fee.rate, amount)?;
+    let (fee, deposit) = get_fee(amount, &staking_config.fee_info.staking_fee)?;
     // get available SHD + available rewards
     let (_, _, claiming) = get_delegatable(deps.querier, &env.contract.address, &staking_config)?;
 
@@ -508,13 +509,13 @@ fn get_delegatable<C: CustomQuery>(
 ///
 /// * `rate` - fee rate
 /// * `amount` - the pre-fee amount
-pub fn get_fee(rate: u32, amount: Uint128) -> StdResult<(Uint128, Uint128)> {
+pub fn get_fee(amount: Uint128, fee_config: &Fee) -> StdResult<(Uint128, Uint128)> {
     // first unwrap is ok because multiplying a u128 by a u32 can not overflow a u256
     // second unwrap is ok because we know we aren't dividing by zero
     let _fee = Uint256::from(amount)
-        .checked_mul(Uint256::from(rate))
+        .checked_mul(Uint256::from(fee_config.rate))
         .unwrap()
-        .checked_div(Uint256::from(100000_u32))
+        .checked_div(Uint256::from(10_u32.pow(fee_config.decimal_places as u32)))
         .unwrap();
     let fee = Uint128::try_from(_fee)?;
     let remainder = amount.saturating_sub(fee);
@@ -558,7 +559,7 @@ fn check_if_admin(
     user: String,
     admin_auth: &Contract,
 ) -> StdResult<()> {
-    validate_admin(&querier, permission, user, &admin_auth)
+    validate_admin(querier, permission, user, admin_auth)
 }
 
 #[cfg(test)]
@@ -753,6 +754,16 @@ fn query_staking_info(deps: &Deps, env: &Env) -> StdResult<Binary> {
         price,
     })
 }
+
+fn query_fee_info(deps: &Deps) -> StdResult<Binary> {
+    let staking_config = STAKING_CONFIG.load(deps.storage)?;
+
+    to_binary(&QueryAnswer::FeeInfo {
+        staking_fee: staking_config.fee_info.staking_fee,
+        unbonding_fee: staking_config.fee_info.unbonding_fee,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::any::Any;
@@ -806,10 +817,12 @@ mod tests {
                 staking_fee: Fee {
                     collector: Addr::unchecked("collector_address"),
                     rate: 5,
+                    decimal_places: 2_u8,
                 },
                 unbonding_fee: Fee {
                     collector: Addr::unchecked("collector_address"),
                     rate: 5,
+                    decimal_places: 2_u8,
                 },
             },
         };
@@ -1150,6 +1163,7 @@ mod tests {
             staking_fee: Some(Fee {
                 collector: Addr::unchecked("new_collector"),
                 rate: 5_u32,
+                decimal_places: 2_u8,
             }),
             unbonding_fee: None,
         };
@@ -1203,7 +1217,12 @@ mod tests {
             "handle() failed: {}",
             handle_result.err().unwrap()
         );
-        let (_, expected_tokens_return) = get_fee(5_u32, Uint128::from(300000000_u128)).unwrap();
+        let staking_config = STAKING_CONFIG.load(&deps.storage).unwrap();
+        let (_, expected_tokens_return) = get_fee(
+            Uint128::from(300000000_u128),
+            &staking_config.fee_info.staking_fee,
+        )
+        .unwrap();
         let (_, tokens_returned) = match from_binary(&handle_result.unwrap().data.unwrap()).unwrap()
         {
             ExecuteAnswer::Stake {
@@ -1260,6 +1279,41 @@ mod tests {
     }
 
     #[test]
+    fn test_fee_info() {
+        let (init_result, deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+        let query_msg = QueryMsg::FeeInfo {};
+        let query_result = query(deps.as_ref(), mock_env(), query_msg);
+        let (staking_fee, unbonding_fee) = match from_binary(&query_result.unwrap()).unwrap() {
+            QueryAnswer::FeeInfo {
+                staking_fee,
+                unbonding_fee,
+            } => (staking_fee, unbonding_fee),
+            other => panic!("Unexpected: {:?}", other),
+        };
+
+        assert_eq!(
+            staking_fee,
+            Fee {
+                collector: Addr::unchecked("collector_address"),
+                rate: 5,
+                decimal_places: 2_u8,
+            }
+        );
+        assert_eq!(
+            unbonding_fee,
+            Fee {
+                collector: Addr::unchecked("collector_address"),
+                rate: 5,
+                decimal_places: 2_u8,
+            }
+        );
+    }
+    #[test]
     fn test_handle_panic_unbond_not_admin_user() {
         let (init_result, mut deps) = init_helper();
         assert!(
@@ -1267,7 +1321,6 @@ mod tests {
             "Init failed: {}",
             init_result.err().unwrap()
         );
-
         let handle_msg = ExecuteMsg::PanicUnbond {
             amount: Uint128::from(100000000_u128),
         };
