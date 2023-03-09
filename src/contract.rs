@@ -1260,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_panic_withdraw_not_admin_user() {
+    fn test_handle_panic_unbond_not_admin_user() {
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
