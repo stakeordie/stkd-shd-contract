@@ -1,4 +1,4 @@
-use crate::msg::{Config, StakingInfo};
+use crate::msg::{Config, ReceiverMsg, StakingInfo};
 use crate::msg::{
     ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InstantiateMsg, QueryAnswer, QueryMsg,
     ResponseStatus::Success,
@@ -16,8 +16,8 @@ use crate::state::{
 /// This contract implements SNIP-20 standard:
 /// https://github.com/SecretFoundation/SNIPs/blob/master/SNIP-20.md
 use cosmwasm_std::{
-    entry_point, to_binary, Addr, Binary, CosmosMsg, CustomQuery, Deps, DepsMut, Env, MessageInfo,
-    QuerierWrapper, Response, StdError, StdResult, Storage, Uint128, Uint256,
+    entry_point, from_binary, to_binary, Addr, Binary, CosmosMsg, CustomQuery, Deps, DepsMut, Env,
+    MessageInfo, QuerierWrapper, Response, StdError, StdResult, Storage, Uint128, Uint256,
 };
 use secret_toolkit::permit::RevokedPermits;
 #[allow(unused_imports)]
@@ -159,7 +159,7 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
             from,
             amount,
             msg,
-        } => try_stake(deps, env, info, from, amount, msg),
+        } => receive(deps, env, info, from, amount, msg),
         ExecuteMsg::CreateViewingKey { entropy, .. } => try_create_key(deps, env, info, entropy),
         ExecuteMsg::SetViewingKey { key, .. } => try_set_key(deps, info, key),
         ExecuteMsg::SetContractStatus { level, .. } => set_contract_status(deps, info, level),
@@ -235,6 +235,29 @@ fn update_fees(
     )
 }
 
+fn receive(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    from: Addr,
+    amount: Uint256,
+    msg: Option<Binary>,
+) -> StdResult<Response> {
+    if msg.is_none() {
+        return Err(StdError::generic_err("No msg provided"));
+    }
+
+    match from_binary(&msg.clone().unwrap())? {
+        ReceiverMsg::Stake {} => try_stake(deps, env, info, from, amount, msg),
+        ReceiverMsg::Unbond {} => try_unbond(deps, env, info, from, amount, msg),
+        #[allow(unreachable_patterns)]
+        _ => Err(StdError::generic_err(format!(
+            "Invalid msg provided, expected {} or {}",
+            to_binary(&ReceiverMsg::Stake {})?,
+            to_binary(&ReceiverMsg::Unbond {})?
+        ))),
+    }
+}
 /// Try to stake SHD received tokens
 ///
 /// Interacts directly with the Staking contract
@@ -331,6 +354,17 @@ fn try_stake(
         .add_messages(messages))
 }
 
+fn try_unbond(
+    _deps: DepsMut,
+    _env: Env,
+    _info: MessageInfo,
+    // address unbonding
+    _from: Addr,
+    _amount: Uint256,
+    _msg: Option<Binary>,
+) -> StdResult<Response> {
+    Ok(Response::default())
+}
 /// Returns StdResult<u128>
 ///
 /// gets the amount of available SHD
@@ -1056,7 +1090,7 @@ mod tests {
             sender: Addr::unchecked(""),
             from: Addr::unchecked(""),
             amount: Uint256::from(100000000 as u32),
-            msg: None,
+            msg: Some(to_binary(&ReceiverMsg::Stake {}).unwrap()),
         };
         let info = mock_info("giannis", &[]);
 
@@ -1081,7 +1115,7 @@ mod tests {
             sender: Addr::unchecked(""),
             from: Addr::unchecked(""),
             amount: Uint256::from(100000000 as u32),
-            msg: None,
+            msg: Some(to_binary(&ReceiverMsg::Stake {}).unwrap()),
         };
         let info = mock_info("shade_contract_info_address", &[]);
 
@@ -1206,7 +1240,7 @@ mod tests {
             sender: Addr::unchecked(""),
             from: Addr::unchecked("bob"),
             amount: Uint256::from(300000000 as u32),
-            msg: None,
+            msg: Some(to_binary(&ReceiverMsg::Stake {}).unwrap()),
         };
         let info = mock_info("shade_contract_info_address", &[]);
 

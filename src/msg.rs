@@ -139,6 +139,13 @@ pub enum ExecuteAnswer {
     },
 }
 
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiverMsg {
+    Stake {},
+    Unbond {},
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
 #[serde(rename_all = "snake_case")]
