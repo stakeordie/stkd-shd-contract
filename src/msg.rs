@@ -53,7 +53,7 @@ pub struct StakingInfo {
     pub shade_contract_vk: String,
     // Derivative SNIP-20
     pub derivative_contract_info: ContractInfo,
-    // Amount of SHD unbonded waiting to be claim by users
+    // Amount of available SHD to be claim by users
     pub unbonded: u128,
     // Fee collector and rate information
     pub fee_info: FeeInfo,
@@ -116,6 +116,15 @@ pub enum ExecuteAnswer {
         shd_staked: Uint128,
         /// amount of derivative token minted
         tokens_returned: Uint128,
+    },
+    /// redeem derivative tokens to unbond SCRT
+    Unbond {
+        /// amount of derivative tokens redeemed
+        tokens_redeemed: Uint128,
+        /// amount of shd to be unbonded
+        shd_to_be_received: Uint128,
+        /// estimated time of maturity
+        estimated_time_of_maturity: Uint128,
     },
     CreateViewingKey {
         key: String,
@@ -191,6 +200,14 @@ pub enum QueryAnswer {
     ViewingKeyError {
         msg: String,
     },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct InProcessUnbonding {
+    pub id: Uint128,
+    pub owner: Addr,
+    pub amount: Uint128,
+    pub complete: Uint128,
 }
 
 #[derive(Serialize, Deserialize, Clone, JsonSchema, Debug)]

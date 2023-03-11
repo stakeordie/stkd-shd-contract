@@ -337,11 +337,11 @@ pub fn config_query<C: CustomQuery>(
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct Unbond {
-    id: Uint128,
-    status: ResponseStatus,
+    pub id: Uint128,
+    pub status: ResponseStatus,
 }
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub struct UnbondResponse {
-    unbond: Unbond,
+    pub unbond: Unbond,
 }
