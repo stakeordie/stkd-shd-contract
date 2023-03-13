@@ -1,25 +1,28 @@
-use crate::msg::{Config, StakingInfo};
+use crate::msg::{Config, InProcessUnbonding, ReceiverMsg, StakingInfo};
 use crate::msg::{
     ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InstantiateMsg, QueryAnswer, QueryMsg,
     ResponseStatus::Success,
 };
 
-use crate::staking_interface::unbond_msg;
 #[allow(unused_imports)]
 use crate::staking_interface::{
     balance_query as staking_balance_query, claim_rewards_msg, config_query, rewards_query, Action,
     RawContract, StakingConfig,
 };
+use crate::staking_interface::{unbond_msg, UnbondResponse, Unbonding};
 use crate::state::{
-    CONFIG, CONTRACT_STATUS, PREFIX_REVOKED_PERMITS, RESPONSE_BLOCK_SIZE, STAKING_CONFIG,
+    UnbondingIdsStore, UnbondingStore, CONFIG, CONTRACT_STATUS, PENDING_UNBONDING,
+    PREFIX_REVOKED_PERMITS, RESPONSE_BLOCK_SIZE, STAKING_CONFIG, UNBOND_REPLY_ID,
 };
 /// This contract implements SNIP-20 standard:
 /// https://github.com/SecretFoundation/SNIPs/blob/master/SNIP-20.md
 use cosmwasm_std::{
-    entry_point, to_binary, Addr, Binary, CosmosMsg, CustomQuery, Deps, DepsMut, Env, MessageInfo,
-    QuerierWrapper, Response, StdError, StdResult, Storage, Uint128, Uint256,
+    entry_point, from_binary, to_binary, Addr, Binary, CosmosMsg, CustomQuery, Deps, DepsMut, Env,
+    MessageInfo, QuerierWrapper, Reply, Response, StdError, StdResult, Storage, SubMsg,
+    SubMsgResult, Uint128, Uint256,
 };
 use secret_toolkit::permit::RevokedPermits;
+use secret_toolkit::snip20::burn_msg;
 #[allow(unused_imports)]
 use secret_toolkit::snip20::{
     balance_query, mint_msg, register_receive_msg, send_msg, set_viewing_key_msg, token_info_query,
@@ -91,14 +94,22 @@ pub fn instantiate(
             shade_contract_vk: shade_contract_vk.clone(),
             authentication_contract_info: msg.authentication_contract_info.clone(),
             shade_contract_info: msg.shade_contract_info.clone(),
+            derivative_contract_info: msg.derivative_contract_info.clone(),
             staking_contract_info: msg.staking_contract_info,
             fee_info: msg.fee_info,
-            derivative_contract_info: msg.derivative_contract_info,
             unbonded: 0,
         },
     )?;
 
     let msgs: Vec<CosmosMsg> = vec![
+        // Register receive Derivative contract needed for Unbond functionality
+        register_receive_msg(
+            env.contract.code_hash.clone(),
+            msg.derivative_contract_info.entropy.clone(),
+            RESPONSE_BLOCK_SIZE,
+            msg.derivative_contract_info.code_hash.clone(),
+            msg.derivative_contract_info.address.to_string(),
+        )?,
         // Register receive SHD contract
         register_receive_msg(
             env.contract.code_hash,
@@ -159,7 +170,7 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
             from,
             amount,
             msg,
-        } => try_stake(deps, env, info, from, amount, msg),
+        } => receive(deps, env, info, from, amount, msg),
         ExecuteMsg::CreateViewingKey { entropy, .. } => try_create_key(deps, env, info, entropy),
         ExecuteMsg::SetViewingKey { key, .. } => try_set_key(deps, info, key),
         ExecuteMsg::SetContractStatus { level, .. } => set_contract_status(deps, info, level),
@@ -185,6 +196,46 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     )
 }
 
+#[entry_point]
+pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> StdResult<Response> {
+    match (msg.id, msg.result) {
+        (UNBOND_REPLY_ID, SubMsgResult::Ok(s)) => match s.data {
+            Some(x) => {
+                let result: UnbondResponse = from_binary(&x)?;
+                // Read unbonding info
+                let pending_unbonding = PENDING_UNBONDING.may_load(deps.storage)?;
+
+                if let Some(unbonding_processing) = pending_unbonding {
+                    // Store unbonding
+                    let unbond = Unbonding {
+                        id: result.unbond.id,
+                        amount: unbonding_processing.amount,
+                        complete: unbonding_processing.complete,
+                    };
+                    UnbondingStore::save(deps.storage, result.unbond.id.clone().u128(), &unbond)?;
+
+                    // Add unbonding id to user's unbondings IDs
+                    let mut users_unbondings_ids =
+                        UnbondingIdsStore::load(deps.storage, &unbonding_processing.owner);
+                    users_unbondings_ids.push(result.unbond.id.u128());
+                    UnbondingIdsStore::save(
+                        deps.storage,
+                        &unbonding_processing.owner,
+                        users_unbondings_ids,
+                    )?;
+
+                    Ok(Response::default())
+                } else {
+                    Err(StdError::generic_err(
+                        "Unexpected error: pending unbond storage is empty.",
+                    ))
+                }
+            }
+            None => Err(StdError::generic_err("Unknown reply id")),
+        },
+        _ => Err(StdError::generic_err("Unknown reply id")),
+    }
+}
 /************ HANDLES ************/
 fn try_panic_unbond(deps: DepsMut, info: MessageInfo, amount: Uint128) -> StdResult<Response> {
     let staking_config = STAKING_CONFIG.load(deps.storage)?;
@@ -235,6 +286,29 @@ fn update_fees(
     )
 }
 
+fn receive(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    from: Addr,
+    amount: Uint256,
+    msg: Option<Binary>,
+) -> StdResult<Response> {
+    if msg.is_none() {
+        return Err(StdError::generic_err("No msg provided"));
+    }
+
+    match from_binary(&msg.clone().unwrap())? {
+        ReceiverMsg::Stake {} => try_stake(deps, env, info, from, amount, msg),
+        ReceiverMsg::Unbond {} => try_unbond(deps, env, info, from, amount, msg),
+        #[allow(unreachable_patterns)]
+        _ => Err(StdError::generic_err(format!(
+            "Invalid msg provided, expected {} or {}",
+            to_binary(&ReceiverMsg::Stake {})?,
+            to_binary(&ReceiverMsg::Unbond {})?
+        ))),
+    }
+}
 /// Try to stake SHD received tokens
 ///
 /// Interacts directly with the Staking contract
@@ -319,8 +393,7 @@ fn try_stake(
 
     // Stake available SHD
     if deposit > Uint128::zero() {
-        let staking = deposit.saturating_sub(fee);
-        messages.push(generate_stake_msg(staking, Some(true), &staking_config)?);
+        messages.push(generate_stake_msg(deposit, Some(true), &staking_config)?);
     }
 
     Ok(Response::new()
@@ -331,6 +404,116 @@ fn try_stake(
         .add_messages(messages))
 }
 
+fn try_unbond(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    // address unbonding
+    from: Addr,
+    _amount: Uint256,
+    _msg: Option<Binary>
+) -> StdResult<Response> {
+    let mut response = Response::new();
+    let mut staking_config = STAKING_CONFIG.load(deps.storage)?;
+    let derivative_token_info = get_token_info(
+        deps.querier,
+        RESPONSE_BLOCK_SIZE,
+        staking_config.derivative_contract_info.code_hash.clone(),
+        staking_config.derivative_contract_info.address.to_string(),
+    )?;
+    let staking_info = get_staking_contract_config(deps.querier, &staking_config)?;
+    let amount = Uint128::try_from(_amount)?;
+    if info.sender != staking_config.derivative_contract_info.address {
+        return Err(StdError::generic_err(
+            "Sender is not derivative (SNIP20) contract",
+        ));
+    }
+
+    if amount == Uint128::zero() {
+        return Err(StdError::generic_err("0 amount sent to unbond"));
+    }
+
+    let (_, _, delegatable) =
+        get_delegatable(deps.querier, &env.contract.address, &staking_config)?;
+
+    let staked = get_staked_shd(deps.querier, &env.contract.address, &staking_config)?;
+    let pool = delegatable + staked;
+    // unwrap is ok because multiplying 2 u128 ints can not overflow a u256
+    let number = Uint256::from(amount)
+        .checked_mul(Uint256::from(pool))
+        .unwrap();
+    // unwrap is ok because derivative token supply could not have been 0 if we were able
+    // to burn
+    let unbond_amount = Uint128::try_from(
+        number
+            .checked_div(Uint256::from(derivative_token_info.total_supply.unwrap()))
+            .unwrap(),
+    )?;
+    // calculate the amount going to the user
+    let (_, shd_to_be_received) = get_fee(unbond_amount, &staking_config.fee_info.unbonding_fee)?;
+
+    if shd_to_be_received.is_zero() {
+        return Err(StdError::generic_err(format!(
+            "Redeeming {} derivative tokens would be worth less than 1 SHD",
+            amount
+        )));
+    }
+
+    let unbonding = InProcessUnbonding {
+        id: Uint128::zero(),
+        amount: shd_to_be_received,
+        owner: from,
+        complete: Uint128::from(env.block.time.seconds())
+            .checked_add(staking_info.unbond_period)?,
+    };
+    PENDING_UNBONDING.save(deps.storage, &unbonding)?;
+
+    #[allow(unused_assignments)]
+    let mut amount_to_unbond = Uint128::zero();
+
+    if shd_to_be_received.u128() > staked {
+        // In case the SHD to be receive is more than actual staked
+        // Then unbond all staked and claim rewards
+        amount_to_unbond = Uint128::from(staked);
+
+        // Since rewards become available after claiming we need to freeze them
+        // unwrap shouldn't panic because `shd_to_be_receive` is higher than `staked`
+        staking_config.unbonded += shd_to_be_received.u128().checked_sub(staked).unwrap()
+    } else {
+        amount_to_unbond = shd_to_be_received
+    };
+
+    STAKING_CONFIG.save(deps.storage, &staking_config)?;
+
+    response = response.add_submessage(SubMsg::reply_always(
+        unbond_msg(
+            amount_to_unbond,
+            staking_config.staking_contract_info.code_hash.clone(),
+            staking_config.staking_contract_info.address.to_string(),
+            Some(true),
+        )?,
+        UNBOND_REPLY_ID,
+    ));
+
+    Ok(response
+        .add_message(burn_msg(
+            amount,
+            Some(format!(
+                "Burn {} derivatives to receive {} SHD",
+                amount, shd_to_be_received
+            )),
+            staking_config.derivative_contract_info.entropy,
+            RESPONSE_BLOCK_SIZE,
+            staking_config.derivative_contract_info.code_hash.clone(),
+            staking_config.derivative_contract_info.address.to_string(),
+        )?)
+        .set_data(to_binary(&ExecuteAnswer::Unbond {
+            shd_to_be_received,
+            tokens_redeemed: amount,
+            estimated_time_of_maturity: Uint128::from(env.block.time.seconds())
+                .checked_add(staking_info.unbond_period)?,
+        })?))
+}
 /// Returns StdResult<u128>
 ///
 /// gets the amount of available SHD
@@ -356,7 +539,7 @@ fn get_available_shd<C: CustomQuery>(
         config.shade_contract_info.address.to_string(),
     )?;
 
-    let available = balance.amount.checked_sub(Uint128::from(config.unbonded))?;
+    let available = balance.amount.checked_sub(Uint128::from(config.unbonded)).unwrap_or(Uint128::zero());
     Ok(available.u128())
 }
 #[cfg(test)]
@@ -549,7 +732,7 @@ fn get_token_info<C: CustomQuery>(
         name: String::from("STKD-SHD"),
         symbol: String::from("STKDSHD"),
         decimals: 6,
-        total_supply: Some(Uint128::zero()),
+        total_supply: Some(Uint128::from(2000_u128)),
     })
 }
 #[cfg(not(test))]
@@ -869,6 +1052,11 @@ mod tests {
             code_hash: String::from("shade_contract_info_code_hash"),
             entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
         };
+        let derivative_contract_info = CustomContractInfo {
+            address: Addr::unchecked("derivative_snip20_info_address"),
+            code_hash: String::from("derivative_snip20_info_codehash"),
+            entropy: Some(String::from("4359o74nd8dnkjerjrh")),
+        };
 
         // Generate viewing key for staking contract
         let entropy: String = staking_contract_info.entropy.clone().unwrap();
@@ -881,6 +1069,15 @@ mod tests {
             new_viewing_key(&info.sender.clone(), &env, &new_seed, entropy.as_ref());
 
         let msgs: Vec<CosmosMsg> = vec![
+            // Register receive Derivative contract
+            register_receive_msg(
+                env.contract.code_hash.clone(),
+                derivative_contract_info.entropy,
+                RESPONSE_BLOCK_SIZE,
+                derivative_contract_info.code_hash,
+                derivative_contract_info.address.to_string(),
+            )
+            .unwrap(),
             // Register receive SHD contract
             register_receive_msg(
                 env.contract.code_hash,
@@ -1056,7 +1253,7 @@ mod tests {
             sender: Addr::unchecked(""),
             from: Addr::unchecked(""),
             amount: Uint256::from(100000000 as u32),
-            msg: None,
+            msg: Some(to_binary(&ReceiverMsg::Stake {}).unwrap()),
         };
         let info = mock_info("giannis", &[]);
 
@@ -1069,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn test_receive_msg_successfully() {
+    fn test_receive_stake_msg_successfully() {
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
@@ -1081,7 +1278,7 @@ mod tests {
             sender: Addr::unchecked(""),
             from: Addr::unchecked(""),
             amount: Uint256::from(100000000 as u32),
-            msg: None,
+            msg: Some(to_binary(&ReceiverMsg::Stake {}).unwrap()),
         };
         let info = mock_info("shade_contract_info_address", &[]);
 
@@ -1092,6 +1289,98 @@ mod tests {
             "handle() failed: {}",
             handle_result.err().unwrap()
         );
+    }
+
+    #[test]
+    fn test_receive_unbond_msg_sender_is_not_derivative_contract() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::Receive {
+            sender: Addr::unchecked(""),
+            from: Addr::unchecked(""),
+            amount: Uint256::from(100000000 as u32),
+            msg: Some(to_binary(&ReceiverMsg::Unbond {}).unwrap()),
+        };
+        let info = mock_info("giannis", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(handle_result.is_err());
+        let error = extract_error_msg(handle_result);
+
+        assert_eq!(error, "Sender is not derivative (SNIP20) contract");
+    }
+
+    #[test]
+    fn test_receive_unbond_msg_successfully() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::Receive {
+            sender: Addr::unchecked(""),
+            from: Addr::unchecked(""),
+            amount: Uint256::from(100000000 as u32),
+            msg: Some(to_binary(&ReceiverMsg::Unbond {}).unwrap()),
+        };
+        let info = mock_info("derivative_snip20_info_address", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_sanity_unbonding_processing_storage() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+        let env = mock_env();
+        // Unbond from bob account
+        let handle_msg = ExecuteMsg::Receive {
+            sender: Addr::unchecked(""),
+            from: Addr::unchecked("bob"),
+            amount: Uint256::from(100000000 as u32),
+            msg: Some(to_binary(&ReceiverMsg::Unbond {}).unwrap()),
+        };
+        let info = mock_info("derivative_snip20_info_address", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+
+        let unbonding_processing = PENDING_UNBONDING.load(&deps.storage).unwrap();
+
+        assert_eq!(
+            unbonding_processing,
+            InProcessUnbonding {
+                id: Uint128::zero(),
+                owner: Addr::unchecked("bob"),
+                amount: Uint128::from(21375000000000_u128),
+                complete: Uint128::from(env.block.time.seconds())
+                    .checked_add(Uint128::from(300_u32))
+                    .unwrap(),
+            }
+        )
     }
 
     #[test]
@@ -1194,7 +1483,7 @@ mod tests {
     }
 
     #[test]
-    fn test_staking_starting_pool_returned_tokens() {
+    fn test_staking_returned_tokens() {
         let (init_result, mut deps) = init_helper();
         assert!(
             init_result.is_ok(),
@@ -1206,7 +1495,7 @@ mod tests {
             sender: Addr::unchecked(""),
             from: Addr::unchecked("bob"),
             amount: Uint256::from(300000000 as u32),
-            msg: None,
+            msg: Some(to_binary(&ReceiverMsg::Stake {}).unwrap()),
         };
         let info = mock_info("shade_contract_info_address", &[]);
 
@@ -1217,12 +1506,7 @@ mod tests {
             "handle() failed: {}",
             handle_result.err().unwrap()
         );
-        let staking_config = STAKING_CONFIG.load(&deps.storage).unwrap();
-        let (_, expected_tokens_return) = get_fee(
-            Uint128::from(300000000_u128),
-            &staking_config.fee_info.staking_fee,
-        )
-        .unwrap();
+        let expected_tokens_return = Uint128::from(3800_u128);
         let (_, tokens_returned) = match from_binary(&handle_result.unwrap().data.unwrap()).unwrap()
         {
             ExecuteAnswer::Stake {
@@ -1274,8 +1558,8 @@ mod tests {
         assert_eq!(bonded_shd, Uint128::from(300000000_u128));
         assert_eq!(available_shd, Uint128::from(100000000_u128));
         assert_eq!(rewards, Uint128::from(100000000_u128));
-        assert_eq!(total_derivative_token_supply, Uint128::zero());
-        assert_eq!(price, Uint128::from(1000000_u32));
+        assert_eq!(total_derivative_token_supply, Uint128::from(2000_u128));
+        assert_eq!(price, Uint128::from(250000000000_u128));
     }
 
     #[test]
