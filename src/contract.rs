@@ -318,19 +318,19 @@ fn receive(
     amount: Uint256,
     msg: Option<Binary>,
 ) -> StdResult<Response> {
-    if msg.is_none() {
-        return Err(StdError::generic_err("No msg provided"));
-    }
-
-    match from_binary(&msg.clone().unwrap())? {
-        ReceiverMsg::Stake {} => try_stake(deps, env, info, from, amount, msg),
-        ReceiverMsg::Unbond {} => try_unbond(deps, env, info, from, amount, msg),
-        #[allow(unreachable_patterns)]
-        _ => Err(StdError::generic_err(format!(
-            "Invalid msg provided, expected {} or {}",
-            to_binary(&ReceiverMsg::Stake {})?,
-            to_binary(&ReceiverMsg::Unbond {})?
-        ))),
+    if let Some(x) = msg {
+        match from_binary(&x)? {
+            ReceiverMsg::Stake {} => try_stake(deps, env, info, from, amount, Some(x)),
+            ReceiverMsg::Unbond {} => try_unbond(deps, env, info, from, amount, Some(x)),
+            #[allow(unreachable_patterns)]
+            _ => Err(StdError::generic_err(format!(
+                "Invalid msg provided, expected {} or {}",
+                to_binary(&ReceiverMsg::Stake {})?,
+                to_binary(&ReceiverMsg::Unbond {})?
+            ))),
+        }
+    } else {
+        Ok(Response::default())
     }
 }
 /// Try to stake SHD received tokens
