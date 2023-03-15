@@ -82,6 +82,9 @@ pub enum ExecuteMsg {
     PanicUnbond {
         amount: Uint128,
     },
+    PanicWithdraw {
+        ids: Option<Vec<Uint128>>,
+    },
     //Receiver interface
     Receive {
         sender: Addr,

@@ -9,7 +9,7 @@ use crate::staking_interface::{
     balance_query as staking_balance_query, claim_rewards_msg, config_query, rewards_query, Action,
     RawContract, StakingConfig,
 };
-use crate::staking_interface::{unbond_msg, UnbondResponse, Unbonding};
+use crate::staking_interface::{unbond_msg, withdraw_msg, UnbondResponse, Unbonding};
 use crate::state::{
     UnbondingIdsStore, UnbondingStore, CONFIG, CONTRACT_STATUS, PENDING_UNBONDING,
     PREFIX_REVOKED_PERMITS, RESPONSE_BLOCK_SIZE, STAKING_CONFIG, UNBOND_REPLY_ID,
@@ -160,6 +160,7 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
 
     let response = match msg {
         ExecuteMsg::PanicUnbond { amount } => try_panic_unbond(deps, info, amount),
+        ExecuteMsg::PanicWithdraw { ids } => try_panic_withdraw(deps, info, ids),
         ExecuteMsg::UpdateFees {
             staking_fee,
             unbonding_fee,
@@ -255,6 +256,29 @@ fn try_panic_unbond(deps: DepsMut, info: MessageInfo, amount: Uint128) -> StdRes
     Ok(Response::default().add_messages(msgs))
 }
 
+fn try_panic_withdraw(
+    deps: DepsMut,
+    info: MessageInfo,
+    ids: Option<Vec<Uint128>>,
+) -> StdResult<Response> {
+    let staking_config = STAKING_CONFIG.load(deps.storage)?;
+    let constants = CONFIG.load(deps.storage)?;
+    check_if_admin(
+        &deps.querier,
+        AdminPermissions::DerivativeAdmin,
+        info.sender.to_string(),
+        &constants.admin_contract_info,
+    )?;
+
+    let msgs = vec![withdraw_msg(
+        staking_config.staking_contract_info.code_hash,
+        staking_config.staking_contract_info.address.to_string(),
+        ids,
+    )?];
+
+    Ok(Response::default().add_messages(msgs))
+}
+
 /// Updates fee's information if provided
 fn update_fees(
     deps: DepsMut,
@@ -294,19 +318,19 @@ fn receive(
     amount: Uint256,
     msg: Option<Binary>,
 ) -> StdResult<Response> {
-    if msg.is_none() {
-        return Err(StdError::generic_err("No msg provided"));
-    }
-
-    match from_binary(&msg.clone().unwrap())? {
-        ReceiverMsg::Stake {} => try_stake(deps, env, info, from, amount, msg),
-        ReceiverMsg::Unbond {} => try_unbond(deps, env, info, from, amount, msg),
-        #[allow(unreachable_patterns)]
-        _ => Err(StdError::generic_err(format!(
-            "Invalid msg provided, expected {} or {}",
-            to_binary(&ReceiverMsg::Stake {})?,
-            to_binary(&ReceiverMsg::Unbond {})?
-        ))),
+    if let Some(x) = msg {
+        match from_binary(&x)? {
+            ReceiverMsg::Stake {} => try_stake(deps, env, info, from, amount, Some(x)),
+            ReceiverMsg::Unbond {} => try_unbond(deps, env, info, from, amount, Some(x)),
+            #[allow(unreachable_patterns)]
+            _ => Err(StdError::generic_err(format!(
+                "Invalid msg provided, expected {} or {}",
+                to_binary(&ReceiverMsg::Stake {})?,
+                to_binary(&ReceiverMsg::Unbond {})?
+            ))),
+        }
+    } else {
+        Ok(Response::default())
     }
 }
 /// Try to stake SHD received tokens
@@ -411,7 +435,7 @@ fn try_unbond(
     // address unbonding
     from: Addr,
     _amount: Uint256,
-    _msg: Option<Binary>
+    _msg: Option<Binary>,
 ) -> StdResult<Response> {
     let mut response = Response::new();
     let mut staking_config = STAKING_CONFIG.load(deps.storage)?;
@@ -539,7 +563,10 @@ fn get_available_shd<C: CustomQuery>(
         config.shade_contract_info.address.to_string(),
     )?;
 
-    let available = balance.amount.checked_sub(Uint128::from(config.unbonded)).unwrap_or(Uint128::zero());
+    let available = balance
+        .amount
+        .checked_sub(Uint128::from(config.unbonded))
+        .unwrap_or(Uint128::zero());
     Ok(available.u128())
 }
 #[cfg(test)]
@@ -1649,6 +1676,62 @@ mod tests {
             staking_config.staking_contract_info.code_hash,
             staking_config.staking_contract_info.address.to_string(),
             Some(false),
+        )
+        .unwrap()];
+
+        assert_eq!(
+            handle_result.unwrap(),
+            Response::default().add_messages(msgs)
+        );
+    }
+
+    #[test]
+    fn test_handle_panic_withdraw_not_admin_user() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+        let handle_msg = ExecuteMsg::PanicWithdraw { ids: None };
+        let info = mock_info("bob", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(handle_result.is_err());
+        let error = extract_error_msg(handle_result);
+
+        assert_eq!(
+            error,
+            "This is an admin command. Admin commands can only be run from admin address"
+        );
+    }
+
+    #[test]
+    fn test_handle_panic_withdraw_msg() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::PanicWithdraw { ids: None };
+        let info = mock_info("admin", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+
+        let staking_config = STAKING_CONFIG.load(&deps.storage).unwrap();
+
+        let msgs = vec![withdraw_msg(
+            staking_config.staking_contract_info.code_hash,
+            staking_config.staking_contract_info.address.to_string(),
+            None,
         )
         .unwrap()];
 
