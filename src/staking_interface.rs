@@ -4,6 +4,7 @@ use cosmwasm_std::{
     to_binary, Addr, CosmosMsg, CustomQuery, QuerierWrapper, QueryRequest, StdError, StdResult,
     Uint128, WasmMsg, WasmQuery,
 };
+use schemars::JsonSchema;
 use secret_toolkit::utils::space_pad;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -201,7 +202,7 @@ impl StakingQuery {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
 pub struct Unbonding {
     pub id: Uint128,
     pub amount: Uint128,

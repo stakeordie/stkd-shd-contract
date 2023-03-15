@@ -2,9 +2,11 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use cosmwasm_std::{Addr, Binary, StdError, StdResult, Uint128, Uint256};
+use cosmwasm_std::{Addr, Api, Binary, StdError, StdResult, Uint128, Uint256};
 use secret_toolkit::permit::Permit;
 use shade_protocol::Contract;
+
+use crate::staking_interface::Unbonding;
 
 #[derive(Serialize, Debug, Deserialize, Clone, JsonSchema)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
@@ -165,20 +167,44 @@ pub enum QueryMsg {
     StakingInfo {},
     FeeInfo {},
     ContractStatus {},
+    Unbondings {
+        address: Addr,
+        viewing_key: String,
+    },
     WithPermit {
         permit: Permit,
         query: QueryWithPermit,
     },
 }
 
+impl QueryMsg {
+    pub fn get_validation_params(&self, api: &dyn Api) -> StdResult<(Vec<Addr>, String)> {
+        match self {
+            Self::Unbondings {
+                address,
+                viewing_key,
+            } => {
+                let address = api.addr_validate(address.as_str())?;
+                Ok((vec![address], viewing_key.clone()))
+            }
+            _ => panic!("This query type does not require authentication"),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
 #[serde(rename_all = "snake_case")]
-pub enum QueryWithPermit {}
+pub enum QueryWithPermit {
+    Unbondings {},
+}
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryAnswer {
+    Unbondings {
+        unbonds: Vec<Unbonding>,
+    },
     StakingInfo {
         /// unbonding time
         unbonding_time: Uint128,

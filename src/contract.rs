@@ -1,4 +1,4 @@
-use crate::msg::{Config, InProcessUnbonding, ReceiverMsg, StakingInfo};
+use crate::msg::{Config, InProcessUnbonding, QueryWithPermit, ReceiverMsg, StakingInfo};
 use crate::msg::{
     ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InstantiateMsg, QueryAnswer, QueryMsg,
     ResponseStatus::Success,
@@ -21,7 +21,7 @@ use cosmwasm_std::{
     MessageInfo, QuerierWrapper, Reply, Response, StdError, StdResult, Storage, SubMsg,
     SubMsgResult, Uint128, Uint256,
 };
-use secret_toolkit::permit::RevokedPermits;
+use secret_toolkit::permit::{Permit, RevokedPermits, TokenPermissions};
 use secret_toolkit::snip20::burn_msg;
 #[allow(unused_imports)]
 use secret_toolkit::snip20::{
@@ -188,10 +188,8 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             QueryMsg::StakingInfo {} => query_staking_info(&deps, &env),
             QueryMsg::FeeInfo {} => query_fee_info(&deps),
             QueryMsg::ContractStatus {} => query_contract_status(deps.storage),
-            QueryMsg::WithPermit {
-                permit: _,
-                query: _,
-            } => Err(StdError::generic_err("Not implemented")),
+            QueryMsg::WithPermit { permit, query } => permit_queries(deps, permit, query),
+            _ => viewing_keys_queries(deps, msg),
         },
         RESPONSE_BLOCK_SIZE,
     )
@@ -918,6 +916,67 @@ pub fn new_viewing_key(
 }
 
 /************ QUERIES ************/
+
+fn permit_queries(deps: Deps, permit: Permit, query: QueryWithPermit) -> Result<Binary, StdError> {
+    // Validate permit content
+    let token_address = CONFIG.load(deps.storage)?.contract_address;
+
+    let account = secret_toolkit::permit::validate(
+        deps,
+        PREFIX_REVOKED_PERMITS,
+        &permit,
+        token_address.into_string(),
+        None,
+    )?;
+
+    // Permit validated! We can now execute the query.
+    match query {
+        QueryWithPermit::Unbondings {} => {
+            if !permit.check_permission(&TokenPermissions::Balance) {
+                return Err(StdError::generic_err(format!(
+                    "No permission to query balance, got permissions {:?}",
+                    permit.params.permissions
+                )));
+            }
+            let addr = deps.api.addr_validate(&account)?;
+            query_unbondings(&deps, addr)
+        }
+    }
+}
+
+pub fn viewing_keys_queries(deps: Deps, msg: QueryMsg) -> StdResult<Binary> {
+    let (addresses, key) = msg.get_validation_params(deps.api)?;
+
+    for address in addresses {
+        let result = ViewingKey::check(deps.storage, address.as_str(), key.as_str());
+        if result.is_ok() {
+            return match msg {
+                QueryMsg::Unbondings { address, .. } => query_unbondings(&deps, address),
+                _ => panic!("This query type does not require authentication"),
+            };
+        }
+    }
+
+    to_binary(&QueryAnswer::ViewingKeyError {
+        msg: "Wrong viewing key for this address or viewing key not set".to_string(),
+    })
+}
+
+fn query_unbondings(deps: &Deps, addr: Addr) -> StdResult<Binary> {
+    let user_unbonds_ids = UnbondingIdsStore::load(deps.storage, &addr);
+    let mut unbonds: Vec<Unbonding> = vec![];
+
+    for id in user_unbonds_ids.into_iter() {
+        let opt_unbonding = UnbondingStore::may_load(deps.storage, id);
+
+        if let Some(unbond) = opt_unbonding {
+            unbonds.push(unbond)
+        }
+    }
+
+    to_binary(&QueryAnswer::Unbondings { unbonds })
+}
+
 fn query_contract_status(storage: &dyn Storage) -> StdResult<Binary> {
     let contract_status = CONTRACT_STATUS.load(storage)?;
 
