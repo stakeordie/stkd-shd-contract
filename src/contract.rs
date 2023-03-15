@@ -1429,6 +1429,41 @@ mod tests {
     }
 
     #[test]
+    fn test_unbonding_query_not_unbonds() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+        // set viewing key
+        let info = mock_info("david", &[]);
+        let handle_msg = ExecuteMsg::SetViewingKey {
+            key: "password".to_string(),
+            padding: Some("asdnkshjfdhfdg5".to_string()),
+        };
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+        // Query unbondings
+        let query_msg = QueryMsg::Unbondings {
+            address: Addr::unchecked("david"),
+            viewing_key: String::from("password"),
+        };
+        let query_result = query(deps.as_ref(), mock_env(), query_msg);
+        let unbonds = match from_binary(&query_result.unwrap()).unwrap() {
+            QueryAnswer::Unbondings { unbonds } => unbonds,
+            other => panic!("Unexpected: {:?}", other),
+        };
+
+        assert_eq!(unbonds, vec![]);
+    }
+
+    #[test]
     fn test_sanity_unbonding_processing_storage() {
         let (init_result, mut deps) = init_helper();
         assert!(
