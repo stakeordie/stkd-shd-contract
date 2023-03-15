@@ -9,7 +9,7 @@ use crate::staking_interface::{
     balance_query as staking_balance_query, claim_rewards_msg, config_query, rewards_query, Action,
     RawContract, StakingConfig,
 };
-use crate::staking_interface::{unbond_msg, UnbondResponse, Unbonding};
+use crate::staking_interface::{unbond_msg, withdraw_msg, UnbondResponse, Unbonding};
 use crate::state::{
     UnbondingIdsStore, UnbondingStore, CONFIG, CONTRACT_STATUS, PENDING_UNBONDING,
     PREFIX_REVOKED_PERMITS, RESPONSE_BLOCK_SIZE, STAKING_CONFIG, UNBOND_REPLY_ID,
@@ -160,6 +160,7 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
 
     let response = match msg {
         ExecuteMsg::PanicUnbond { amount } => try_panic_unbond(deps, info, amount),
+        ExecuteMsg::PanicWithdraw { ids } => try_panic_withdraw(deps, info, ids),
         ExecuteMsg::UpdateFees {
             staking_fee,
             unbonding_fee,
@@ -252,6 +253,29 @@ fn try_panic_unbond(deps: DepsMut, info: MessageInfo, amount: Uint128) -> StdRes
         staking_config.staking_contract_info.address.to_string(),
         Some(false),
     )?];
+    Ok(Response::default().add_messages(msgs))
+}
+
+fn try_panic_withdraw(
+    deps: DepsMut,
+    info: MessageInfo,
+    ids: Option<Vec<Uint128>>,
+) -> StdResult<Response> {
+    let staking_config = STAKING_CONFIG.load(deps.storage)?;
+    let constants = CONFIG.load(deps.storage)?;
+    check_if_admin(
+        &deps.querier,
+        AdminPermissions::DerivativeAdmin,
+        info.sender.to_string(),
+        &constants.admin_contract_info,
+    )?;
+
+    let msgs = vec![withdraw_msg(
+        staking_config.staking_contract_info.code_hash,
+        staking_config.staking_contract_info.address.to_string(),
+        ids,
+    )?];
+
     Ok(Response::default().add_messages(msgs))
 }
 
@@ -411,7 +435,7 @@ fn try_unbond(
     // address unbonding
     from: Addr,
     _amount: Uint256,
-    _msg: Option<Binary>
+    _msg: Option<Binary>,
 ) -> StdResult<Response> {
     let mut response = Response::new();
     let mut staking_config = STAKING_CONFIG.load(deps.storage)?;
@@ -539,7 +563,10 @@ fn get_available_shd<C: CustomQuery>(
         config.shade_contract_info.address.to_string(),
     )?;
 
-    let available = balance.amount.checked_sub(Uint128::from(config.unbonded)).unwrap_or(Uint128::zero());
+    let available = balance
+        .amount
+        .checked_sub(Uint128::from(config.unbonded))
+        .unwrap_or(Uint128::zero());
     Ok(available.u128())
 }
 #[cfg(test)]
