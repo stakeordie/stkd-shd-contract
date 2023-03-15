@@ -1684,4 +1684,60 @@ mod tests {
             Response::default().add_messages(msgs)
         );
     }
+
+    #[test]
+    fn test_handle_panic_withdraw_not_admin_user() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+        let handle_msg = ExecuteMsg::PanicWithdraw { ids: None };
+        let info = mock_info("bob", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(handle_result.is_err());
+        let error = extract_error_msg(handle_result);
+
+        assert_eq!(
+            error,
+            "This is an admin command. Admin commands can only be run from admin address"
+        );
+    }
+
+    #[test]
+    fn test_handle_panic_withdraw_msg() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::PanicWithdraw { ids: None };
+        let info = mock_info("admin", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+
+        let staking_config = STAKING_CONFIG.load(&deps.storage).unwrap();
+
+        let msgs = vec![withdraw_msg(
+            staking_config.staking_contract_info.code_hash,
+            staking_config.staking_contract_info.address.to_string(),
+            None,
+        )
+        .unwrap()];
+
+        assert_eq!(
+            handle_result.unwrap(),
+            Response::default().add_messages(msgs)
+        );
+    }
 }
