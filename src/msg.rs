@@ -164,6 +164,10 @@ pub enum ReceiverMsg {
 #[cfg_attr(test, derive(Eq, PartialEq))]
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
+    Holdings {
+        address: Addr,
+        viewing_key: String,
+    },
     StakingInfo {},
     FeeInfo {},
     ContractStatus {},
@@ -187,6 +191,13 @@ impl QueryMsg {
                 let address = api.addr_validate(address.as_str())?;
                 Ok((vec![address], viewing_key.clone()))
             }
+            Self::Holdings {
+                address,
+                viewing_key,
+            } => {
+                let address = api.addr_validate(address.as_str())?;
+                Ok((vec![address], viewing_key.clone()))
+            }
             _ => panic!("This query type does not require authentication"),
         }
     }
@@ -197,11 +208,16 @@ impl QueryMsg {
 #[serde(rename_all = "snake_case")]
 pub enum QueryWithPermit {
     Unbondings {},
+    Holdings {},
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryAnswer {
+    Holdings {
+        derivative_claimable: Uint128,
+        derivative_unbonding: Uint128,
+    },
     Unbondings {
         unbonds: Vec<Unbonding>,
     },
