@@ -1773,16 +1773,17 @@ mod tests {
 
         let staking_config = STAKING_CONFIG.load(&deps.storage).unwrap();
 
-        let msgs = vec![withdraw_msg(
-            staking_config.staking_contract_info.code_hash,
-            staking_config.staking_contract_info.address.to_string(),
-            None,
-        )
-        .unwrap()];
-
         assert_eq!(
             handle_result.unwrap(),
-            Response::default().add_messages(msgs)
+            Response::default().add_submessage(SubMsg::reply_always(
+                withdraw_msg(
+                    staking_config.staking_contract_info.code_hash,
+                    staking_config.staking_contract_info.address.to_string(),
+                    None,
+                )
+                .unwrap(),
+                PANIC_WITHDRAW_REPLY_ID
+            ))
         );
     }
 }
