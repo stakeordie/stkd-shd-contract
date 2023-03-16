@@ -77,6 +77,7 @@ pub struct InstantiateMsg {
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteMsg {
+    CompoundRewards {},
     UpdateFees {
         staking_fee: Option<Fee>,
         unbonding_fee: Option<Fee>,
@@ -116,6 +117,9 @@ pub enum ExecuteMsg {
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteAnswer {
+    CompoundRewards {
+        status: ResponseStatus,
+    },
     Stake {
         /// amount of SHD staked
         shd_staked: Uint128,
