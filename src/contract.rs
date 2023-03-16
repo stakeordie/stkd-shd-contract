@@ -9,10 +9,13 @@ use crate::staking_interface::{
     balance_query as staking_balance_query, claim_rewards_msg, config_query, rewards_query, Action,
     RawContract, StakingConfig,
 };
-use crate::staking_interface::{unbond_msg, withdraw_msg, UnbondResponse, Unbonding};
+use crate::staking_interface::{
+    unbond_msg, withdraw_msg, UnbondResponse, Unbonding, WithdrawResponse,
+};
 use crate::state::{
-    UnbondingIdsStore, UnbondingStore, CONFIG, CONTRACT_STATUS, PENDING_UNBONDING,
-    PREFIX_REVOKED_PERMITS, RESPONSE_BLOCK_SIZE, STAKING_CONFIG, UNBOND_REPLY_ID,
+    UnbondingIdsStore, UnbondingStore, CONFIG, CONTRACT_STATUS, PANIC_WITHDRAW_REPLY_ID,
+    PENDING_UNBONDING, PREFIX_REVOKED_PERMITS, RESPONSE_BLOCK_SIZE, STAKING_CONFIG,
+    UNBOND_REPLY_ID,
 };
 /// This contract implements SNIP-20 standard:
 /// https://github.com/SecretFoundation/SNIPs/blob/master/SNIP-20.md
@@ -33,6 +36,10 @@ use secret_toolkit::viewing_key::{ViewingKey, ViewingKeyStore};
 use secret_toolkit_crypto::{sha_256, Prng};
 #[allow(unused_imports)]
 use shade_protocol::admin::helpers::{validate_admin, AdminPermissions};
+#[allow(unused_imports)]
+use shade_protocol::admin::{ConfigResponse, QueryMsg as AdminQueryMsg};
+#[allow(unused_imports)]
+use shade_protocol::utils::Query;
 #[allow(unused_imports)]
 use shade_protocol::Contract;
 
@@ -234,6 +241,28 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> StdResult<Response> {
             }
             None => Err(StdError::generic_err("Unknown reply id")),
         },
+
+        (PANIC_WITHDRAW_REPLY_ID, SubMsgResult::Ok(s)) => match s.data {
+            Some(x) => {
+                let staking_config = STAKING_CONFIG.load(deps.storage)?;
+                let config = CONFIG.load(deps.storage)?;
+                let result: WithdrawResponse = from_binary(&x)?;
+                let withdrawn = result.withdraw.withdrawn;
+                let addr = get_super_admin(&deps.querier, &config)?;
+
+                Ok(Response::default().add_message(send_msg(
+                    addr.to_string(),
+                    withdrawn,
+                    None,
+                    Some("Panic withdraw {} tokens".to_string()),
+                    staking_config.shade_contract_info.entropy,
+                    RESPONSE_BLOCK_SIZE,
+                    staking_config.shade_contract_info.code_hash,
+                    staking_config.shade_contract_info.address.to_string(),
+                )?))
+            }
+            None => Err(StdError::generic_err("Unknown reply id")),
+        },
         _ => Err(StdError::generic_err("Unknown reply id")),
     }
 }
@@ -270,13 +299,14 @@ fn try_panic_withdraw(
         &constants.admin_contract_info,
     )?;
 
-    let msgs = vec![withdraw_msg(
-        staking_config.staking_contract_info.code_hash,
-        staking_config.staking_contract_info.address.to_string(),
-        ids,
-    )?];
-
-    Ok(Response::default().add_messages(msgs))
+    Ok(Response::default().add_submessage(SubMsg::reply_always(
+        withdraw_msg(
+            staking_config.staking_contract_info.code_hash,
+            staking_config.staking_contract_info.address.to_string(),
+            ids,
+        )?,
+        PANIC_WITHDRAW_REPLY_ID,
+    )))
 }
 
 /// Updates fee's information if provided
@@ -709,6 +739,21 @@ fn get_delegatable<C: CustomQuery>(
     _: &StakingInfo,
 ) -> StdResult<(u128, u128, u128)> {
     Ok((100000000, 50000000, 100000000 + 50000000))
+}
+
+#[cfg(test)]
+fn get_super_admin(_: &QuerierWrapper, _: &Config) -> StdResult<Addr> {
+    Ok(Addr::unchecked("super_admin"))
+}
+#[cfg(not(test))]
+fn get_super_admin(querier: &QuerierWrapper, config: &Config) -> StdResult<Addr> {
+    let response: StdResult<ConfigResponse> =
+        AdminQueryMsg::GetConfig {}.query(querier, &config.admin_contract_info);
+
+    match response {
+        Ok(resp) => Ok(resp.super_admin),
+        Err(err) => Err(err),
+    }
 }
 /// Returns StdResult<(u128, u128)>
 ///

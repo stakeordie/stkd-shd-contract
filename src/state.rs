@@ -14,6 +14,7 @@ pub const PREFIX_UNBONDINGS_IDS: &[u8] = b"unbondings_ids";
 pub const PREFIX_UNBONDINGS: &[u8] = b"unbondings";
 pub const RESPONSE_BLOCK_SIZE: usize = 256;
 pub const UNBOND_REPLY_ID: u64 = 1_u64;
+pub const PANIC_WITHDRAW_REPLY_ID: u64 = 2_u64;
 
 pub static CONTRACT_STATUS: Item<ContractStatusLevel, Json> = Item::new(KEY_CONTRACT_STATUS);
 pub static STAKING_CONFIG: Item<StakingInfo> = Item::new(KEY_STAKING_INFO);
