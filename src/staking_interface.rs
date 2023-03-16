@@ -345,3 +345,15 @@ pub struct Unbond {
 pub struct UnbondResponse {
     pub unbond: Unbond,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct Withdraw {
+    pub withdrawn: Uint128,
+    pub status: ResponseStatus,
+}
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct WithdrawResponse {
+    pub withdraw: Withdraw,
+}
