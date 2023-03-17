@@ -10,7 +10,7 @@ use crate::staking_interface::{
     RawContract, StakingConfig,
 };
 use crate::staking_interface::{
-    unbond_msg, withdraw_msg, UnbondResponse, Unbonding, WithdrawResponse,
+    compound_msg, unbond_msg, withdraw_msg, UnbondResponse, Unbonding, WithdrawResponse,
 };
 use crate::state::{
     UnbondingIdsStore, UnbondingStore, CONFIG, CONTRACT_STATUS, PANIC_WITHDRAW_REPLY_ID,
@@ -166,6 +166,7 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
     }
 
     let response = match msg {
+        ExecuteMsg::CompoundRewards {} => try_compound_rewards(deps),
         ExecuteMsg::PanicUnbond { amount } => try_panic_unbond(deps, info, amount),
         ExecuteMsg::PanicWithdraw { ids } => try_panic_withdraw(deps, info, ids),
         ExecuteMsg::UpdateFees {
@@ -265,6 +266,16 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> StdResult<Response> {
     }
 }
 /************ HANDLES ************/
+fn try_compound_rewards(deps: DepsMut) -> StdResult<Response> {
+    let staking_config = STAKING_CONFIG.load(deps.storage)?;
+
+    let msgs = vec![compound_msg(
+        staking_config.staking_contract_info.code_hash,
+        staking_config.staking_contract_info.address.to_string(),
+    )?];
+    Ok(Response::default().add_messages(msgs))
+}
+
 fn try_panic_unbond(deps: DepsMut, info: MessageInfo, amount: Uint128) -> StdResult<Response> {
     let staking_config = STAKING_CONFIG.load(deps.storage)?;
     let constants = CONFIG.load(deps.storage)?;
@@ -1843,6 +1854,40 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn test_handle_compound_rewards_msg() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::CompoundRewards {};
+        let info = mock_info("x", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+
+        let staking_config = STAKING_CONFIG.load(&deps.storage).unwrap();
+
+        let msgs = vec![compound_msg(
+            staking_config.staking_contract_info.code_hash,
+            staking_config.staking_contract_info.address.to_string(),
+        )
+        .unwrap()];
+
+        assert_eq!(
+            handle_result.unwrap(),
+            Response::default().add_messages(msgs)
+        );
+    }
+
     #[test]
     fn test_handle_panic_unbond_not_admin_user() {
         let (init_result, mut deps) = init_helper();
