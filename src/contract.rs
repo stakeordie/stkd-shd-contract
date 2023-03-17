@@ -407,12 +407,12 @@ fn try_stake(
     let token_info = get_token_info(
         deps.querier,
         RESPONSE_BLOCK_SIZE,
-        staking_config.shade_contract_info.code_hash.clone(),
-        staking_config.shade_contract_info.address.to_string(),
+        staking_config.derivative_contract_info.code_hash.clone(),
+        staking_config.derivative_contract_info.address.to_string(),
     )?;
-    let total_supply = token_info.total_supply.unwrap_or(Uint128::zero()).u128();
+    let total_supply = token_info.total_supply.unwrap_or(Uint128::zero());
     // mint appropriate amount
-    let mint = if starting_pool == 0 || total_supply == 0 {
+    let mint = if starting_pool == 0 || total_supply.is_zero() {
         deposit
     } else {
         // unwrap is ok because multiplying 2 u128 ints can not overflow a u256
@@ -460,6 +460,7 @@ fn try_stake(
     }
 
     Ok(Response::new()
+        .add_attribute("tokens_returned", mint)
         .set_data(to_binary(&ExecuteAnswer::Stake {
             shd_staked: deposit,
             tokens_returned: mint,
