@@ -166,6 +166,7 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
     }
 
     let response = match msg {
+        ExecuteMsg::Claim {} => try_claim(deps, env, info),
         ExecuteMsg::CompoundRewards {} => try_compound_rewards(deps),
         ExecuteMsg::PanicUnbond { amount } => try_panic_unbond(deps, info, amount),
         ExecuteMsg::PanicWithdraw { ids } => try_panic_withdraw(deps, info, ids),
@@ -266,6 +267,63 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> StdResult<Response> {
     }
 }
 /************ HANDLES ************/
+fn try_claim(deps: DepsMut, env: Env, info: MessageInfo) -> StdResult<Response> {
+    let sender = info.sender;
+    let time = Uint128::from(env.block.time.seconds());
+    let user_unbondings_ids = UnbondingIdsStore::load(deps.storage, &sender);
+
+    let mut to_claim_ids: Vec<u128> = vec![];
+    let mut amount_claimed = Uint128::zero();
+
+    for id in user_unbondings_ids.iter() {
+        let opt_unbonding = UnbondingStore::may_load(deps.storage, *id);
+        if let Some(unbonding) = opt_unbonding {
+            // Handle mature unbondings
+            if time >= unbonding.complete {
+                to_claim_ids.push(unbonding.id.u128());
+                amount_claimed += unbonding.amount;
+
+                // Remove unbonding from storage
+                UnbondingStore::remove(deps.storage, *id)?;
+            }
+        }
+    }
+    if to_claim_ids.is_empty() {
+        return Err(StdError::generic_err("No mature unbondings to claim"));
+    }
+
+    let users_new_pending_unbondings: Vec<u128> = user_unbondings_ids
+        .into_iter()
+        .filter(|id| !to_claim_ids.contains(id))
+        .collect();
+    UnbondingIdsStore::save(deps.storage, &sender, users_new_pending_unbondings.clone())?;
+
+    let to_claim_ids_uint128: Vec<Uint128> = to_claim_ids.into_iter().map(Uint128::from).collect();
+
+    let staking_config: StakingInfo = STAKING_CONFIG.load(deps.storage)?;
+    let messages: Vec<CosmosMsg> = vec![
+        withdraw_msg(
+            staking_config.staking_contract_info.code_hash,
+            staking_config.staking_contract_info.address.to_string(),
+            Some(to_claim_ids_uint128),
+        )?,
+        send_msg(
+            sender.to_string(),
+            amount_claimed,
+            None,
+            Some(format!("Claiming {} SHD tokens", { amount_claimed })),
+            staking_config.shade_contract_info.entropy,
+            RESPONSE_BLOCK_SIZE,
+            staking_config.shade_contract_info.code_hash,
+            staking_config.shade_contract_info.address.to_string(),
+        )?,
+    ];
+
+    Ok(Response::default()
+        .add_messages(messages)
+        .set_data(to_binary(&ExecuteAnswer::Claim { amount_claimed })?))
+}
+
 fn try_compound_rewards(deps: DepsMut) -> StdResult<Response> {
     let staking_config = STAKING_CONFIG.load(deps.storage)?;
 
@@ -1854,6 +1912,24 @@ mod tests {
                 decimal_places: 2_u8,
             }
         );
+    }
+    #[test]
+    fn test_handle_claim_not_mature_unbonds() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::Claim {};
+        let info = mock_info("x", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+        assert!(handle_result.is_err());
+        let error = extract_error_msg(handle_result);
+
+        assert_eq!(error, "No mature unbondings to claim");
     }
 
     #[test]
