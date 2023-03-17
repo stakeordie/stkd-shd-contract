@@ -195,8 +195,8 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             QueryMsg::StakingInfo {} => query_staking_info(&deps, &env),
             QueryMsg::FeeInfo {} => query_fee_info(&deps),
             QueryMsg::ContractStatus {} => query_contract_status(deps.storage),
-            QueryMsg::WithPermit { permit, query } => permit_queries(deps, permit, query),
-            _ => viewing_keys_queries(deps, msg),
+            QueryMsg::WithPermit { permit, query } => permit_queries(deps, &env, permit, query),
+            _ => viewing_keys_queries(deps, &env, msg),
         },
         RESPONSE_BLOCK_SIZE,
     )
@@ -962,7 +962,12 @@ pub fn new_viewing_key(
 
 /************ QUERIES ************/
 
-fn permit_queries(deps: Deps, permit: Permit, query: QueryWithPermit) -> Result<Binary, StdError> {
+fn permit_queries(
+    deps: Deps,
+    env: &Env,
+    permit: Permit,
+    query: QueryWithPermit,
+) -> Result<Binary, StdError> {
     // Validate permit content
     let token_address = CONFIG.load(deps.storage)?.contract_address;
 
@@ -979,17 +984,27 @@ fn permit_queries(deps: Deps, permit: Permit, query: QueryWithPermit) -> Result<
         QueryWithPermit::Unbondings {} => {
             if !permit.check_permission(&TokenPermissions::Balance) {
                 return Err(StdError::generic_err(format!(
-                    "No permission to query balance, got permissions {:?}",
+                    "No permission to query unbondings, got permissions {:?}",
                     permit.params.permissions
                 )));
             }
             let addr = deps.api.addr_validate(&account)?;
             query_unbondings(&deps, addr)
         }
+        QueryWithPermit::Holdings {} => {
+            if !permit.check_permission(&TokenPermissions::Balance) {
+                return Err(StdError::generic_err(format!(
+                    "No permission to query holdings, got permissions {:?}",
+                    permit.params.permissions
+                )));
+            }
+            let addr = deps.api.addr_validate(&account)?;
+            query_holdings(&deps, env, addr)
+        }
     }
 }
 
-pub fn viewing_keys_queries(deps: Deps, msg: QueryMsg) -> StdResult<Binary> {
+pub fn viewing_keys_queries(deps: Deps, env: &Env, msg: QueryMsg) -> StdResult<Binary> {
     let (addresses, key) = msg.get_validation_params(deps.api)?;
 
     for address in addresses {
@@ -997,6 +1012,7 @@ pub fn viewing_keys_queries(deps: Deps, msg: QueryMsg) -> StdResult<Binary> {
         if result.is_ok() {
             return match msg {
                 QueryMsg::Unbondings { address, .. } => query_unbondings(&deps, address),
+                QueryMsg::Holdings { address, .. } => query_holdings(&deps, env, address),
                 _ => panic!("This query type does not require authentication"),
             };
         }
@@ -1004,6 +1020,30 @@ pub fn viewing_keys_queries(deps: Deps, msg: QueryMsg) -> StdResult<Binary> {
 
     to_binary(&QueryAnswer::ViewingKeyError {
         msg: "Wrong viewing key for this address or viewing key not set".to_string(),
+    })
+}
+
+fn query_holdings(deps: &Deps, env: &Env, addr: Addr) -> StdResult<Binary> {
+    let mut derivative_claimable = Uint128::zero();
+    let mut derivative_unbonding = Uint128::zero();
+
+    let time = Uint128::from(env.block.time.seconds());
+
+    let unbondings_ids = UnbondingIdsStore::load(deps.storage, &addr);
+
+    for id in unbondings_ids.into_iter() {
+        let opt_unbonding = UnbondingStore::may_load(deps.storage, id);
+        if let Some(unbonding) = opt_unbonding {
+            if time >= unbonding.complete {
+                derivative_claimable += unbonding.amount;
+            } else {
+                derivative_unbonding += unbonding.amount;
+            }
+        }
+    }
+    to_binary(&QueryAnswer::Holdings {
+        derivative_claimable,
+        derivative_unbonding,
     })
 }
 
@@ -1506,6 +1546,46 @@ mod tests {
         };
 
         assert_eq!(unbonds, vec![]);
+    }
+
+    #[test]
+    fn test_holdings_query_not_funds() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+        // set viewing key
+        let info = mock_info("david", &[]);
+        let handle_msg = ExecuteMsg::SetViewingKey {
+            key: "password".to_string(),
+            padding: Some("asdnkshjfdhfdg5".to_string()),
+        };
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+        // Query unbondings
+        let query_msg = QueryMsg::Holdings {
+            address: Addr::unchecked("david"),
+            viewing_key: String::from("password"),
+        };
+        let query_result = query(deps.as_ref(), mock_env(), query_msg);
+        let (derivative_claimable, derivative_unbonding) =
+            match from_binary(&query_result.unwrap()).unwrap() {
+                QueryAnswer::Holdings {
+                    derivative_claimable,
+                    derivative_unbonding,
+                } => (derivative_claimable, derivative_unbonding),
+                other => panic!("Unexpected: {:?}", other),
+            };
+
+        assert_eq!(derivative_claimable, Uint128::zero());
+        assert_eq!(derivative_unbonding, Uint128::zero());
     }
 
     #[test]
