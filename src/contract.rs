@@ -104,7 +104,6 @@ pub fn instantiate(
             derivative_contract_info: msg.derivative_contract_info.clone(),
             staking_contract_info: msg.staking_contract_info,
             fee_info: msg.fee_info,
-            unbonded: 0,
         },
     )?;
 
@@ -624,7 +623,7 @@ fn try_unbond(
 /// Returns StdResult<u128>
 ///
 /// gets the amount of available SHD
-/// by querying contract balance and subtracting unbonded
+/// by querying contract balance
 ///
 /// # Arguments
 ///
@@ -646,10 +645,7 @@ fn get_available_shd<C: CustomQuery>(
         config.shade_contract_info.address.to_string(),
     )?;
 
-    let available = balance
-        .amount
-        .checked_sub(Uint128::from(config.unbonded))
-        .unwrap_or(Uint128::zero());
+    let available = balance.amount;
     Ok(available.u128())
 }
 #[cfg(test)]
