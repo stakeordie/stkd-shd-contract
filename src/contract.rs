@@ -536,7 +536,7 @@ fn try_unbond(
     _msg: Option<Binary>,
 ) -> StdResult<Response> {
     let mut response = Response::new();
-    let mut staking_config = STAKING_CONFIG.load(deps.storage)?;
+    let staking_config = STAKING_CONFIG.load(deps.storage)?;
     let derivative_token_info = get_token_info(
         deps.querier,
         RESPONSE_BLOCK_SIZE,
@@ -589,27 +589,11 @@ fn try_unbond(
             .checked_add(staking_info.unbond_period)?,
     };
     PENDING_UNBONDING.save(deps.storage, &unbonding)?;
-
-    #[allow(unused_assignments)]
-    let mut amount_to_unbond = Uint128::zero();
-
-    if shd_to_be_received.u128() > staked {
-        // In case the SHD to be receive is more than actual staked
-        // Then unbond all staked and claim rewards
-        amount_to_unbond = Uint128::from(staked);
-
-        // Since rewards become available after claiming we need to freeze them
-        // unwrap shouldn't panic because `shd_to_be_receive` is higher than `staked`
-        staking_config.unbonded += shd_to_be_received.u128().checked_sub(staked).unwrap()
-    } else {
-        amount_to_unbond = shd_to_be_received
-    };
-
     STAKING_CONFIG.save(deps.storage, &staking_config)?;
 
     response = response.add_submessage(SubMsg::reply_always(
         unbond_msg(
-            amount_to_unbond,
+            shd_to_be_received,
             staking_config.staking_contract_info.code_hash.clone(),
             staking_config.staking_contract_info.address.to_string(),
             Some(true),
@@ -618,6 +602,7 @@ fn try_unbond(
     ));
 
     Ok(response
+        .add_attribute("amount_returned", shd_to_be_received)
         .add_message(burn_msg(
             amount,
             Some(format!(
