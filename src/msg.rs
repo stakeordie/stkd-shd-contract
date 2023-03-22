@@ -55,8 +55,6 @@ pub struct StakingInfo {
     pub shade_contract_vk: String,
     // Derivative SNIP-20
     pub derivative_contract_info: ContractInfo,
-    // Amount of available SHD to be claim by users
-    pub unbonded: u128,
     // Fee collector and rate information
     pub fee_info: FeeInfo,
 }
