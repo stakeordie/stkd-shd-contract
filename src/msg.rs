@@ -11,8 +11,18 @@ use crate::staking_interface::Unbonding;
 #[derive(Serialize, Debug, Deserialize, Clone, JsonSchema)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
 pub struct Config {
-    pub name: String,
-    pub symbol: String,
+    // Staking contract (SHADE-CUSTOM) information
+    pub staking_contract_info: ContractInfo,
+    pub staking_contract_vk: String,
+    // Staking authentication contract (SHADE-CUSTOM) information
+    pub authentication_contract_info: ContractInfo,
+    // SHD (SNIP-20) information
+    pub shade_contract_info: ContractInfo,
+    pub shade_contract_vk: String,
+    // Derivative SNIP-20
+    pub derivative_contract_info: ContractInfo,
+    // Fee collector and rate information
+    pub fee_info: FeeInfo,
     pub contract_address: Addr,
     pub admin_contract_info: Contract,
 }
@@ -42,27 +52,8 @@ pub struct ContractInfo {
     pub entropy: Option<String>,
 }
 
-#[cfg_attr(test, derive(Eq, PartialEq))]
-#[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
-pub struct StakingInfo {
-    // Staking contract (SHADE-CUSTOM) information
-    pub staking_contract_info: ContractInfo,
-    pub staking_contract_vk: String,
-    // Staking authentication contract (SHADE-CUSTOM) information
-    pub authentication_contract_info: ContractInfo,
-    // SHD (SNIP-20) information
-    pub shade_contract_info: ContractInfo,
-    pub shade_contract_vk: String,
-    // Derivative SNIP-20
-    pub derivative_contract_info: ContractInfo,
-    // Fee collector and rate information
-    pub fee_info: FeeInfo,
-}
-
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct InstantiateMsg {
-    pub name: String,
-    pub symbol: String,
     pub prng_seed: Binary,
     pub staking_contract_info: ContractInfo,
     pub authentication_contract_info: ContractInfo,

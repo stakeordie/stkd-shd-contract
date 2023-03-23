@@ -2,7 +2,7 @@ use cosmwasm_std::{Addr, StdResult, Storage};
 use secret_toolkit::storage::Item;
 use secret_toolkit::{serialization::Json, storage::Keymap};
 
-use crate::msg::{Config, ContractStatusLevel, InProcessUnbonding, StakingInfo};
+use crate::msg::{Config, ContractStatusLevel, InProcessUnbonding};
 use crate::staking_interface::Unbonding;
 
 pub const KEY_CONFIG: &[u8] = b"config";
@@ -17,7 +17,6 @@ pub const UNBOND_REPLY_ID: u64 = 1_u64;
 pub const PANIC_WITHDRAW_REPLY_ID: u64 = 2_u64;
 
 pub static CONTRACT_STATUS: Item<ContractStatusLevel, Json> = Item::new(KEY_CONTRACT_STATUS);
-pub static STAKING_CONFIG: Item<StakingInfo> = Item::new(KEY_STAKING_INFO);
 pub static CONFIG: Item<Config> = Item::new(KEY_CONFIG);
 pub static PENDING_UNBONDING: Item<InProcessUnbonding> = Item::new(KEY_PENDING_UNBONDING);
 pub static UNBONDINGS_IDS: Item<Vec<u128>> = Item::new(PREFIX_UNBONDINGS_IDS);
