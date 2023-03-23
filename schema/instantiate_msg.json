@@ -3,41 +3,35 @@
   "title": "InstantiateMsg",
   "type": "object",
   "required": [
-    "authentication_contract_info",
-    "fee_info",
-    "name",
+    "admin",
+    "derivative",
+    "fees",
     "prng_seed",
-    "shade_contract_info",
-    "staking_contract_info",
-    "symbol"
+    "query_auth",
+    "staking",
+    "token"
   ],
   "properties": {
     "admin": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "$ref": "#/definitions/Contract"
     },
-    "authentication_contract_info": {
+    "derivative": {
       "$ref": "#/definitions/ContractInfo"
     },
-    "fee_info": {
+    "fees": {
       "$ref": "#/definitions/FeeInfo"
-    },
-    "name": {
-      "type": "string"
     },
     "prng_seed": {
       "$ref": "#/definitions/Binary"
     },
-    "shade_contract_info": {
+    "query_auth": {
       "$ref": "#/definitions/ContractInfo"
     },
-    "staking_contract_info": {
+    "staking": {
       "$ref": "#/definitions/ContractInfo"
     },
-    "symbol": {
-      "type": "string"
+    "token": {
+      "$ref": "#/definitions/ContractInfo"
     }
   },
   "definitions": {
@@ -48,6 +42,23 @@
     "Binary": {
       "description": "Binary is a wrapper around Vec<u8> to add base64 de/serialization with serde. It also adds some helper methods to help encode inline.\n\nThis is only needed as serde-json-{core,wasm} has a horrible encoding for Vec<u8>",
       "type": "string"
+    },
+    "Contract": {
+      "description": "In the process of being deprecated for [cosmwasm_std::ContractInfo] so use that instead when possible.",
+      "type": "object",
+      "required": [
+        "address",
+        "code_hash"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/definitions/Addr"
+        },
+        "code_hash": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     },
     "ContractInfo": {
       "type": "object",
@@ -74,11 +85,17 @@
       "type": "object",
       "required": [
         "collector",
+        "decimal_places",
         "rate"
       ],
       "properties": {
         "collector": {
           "$ref": "#/definitions/Addr"
+        },
+        "decimal_places": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0.0
         },
         "rate": {
           "type": "integer",
@@ -90,14 +107,14 @@
     "FeeInfo": {
       "type": "object",
       "required": [
-        "staking_fee",
-        "unbonding_fee"
+        "staking",
+        "unbonding"
       ],
       "properties": {
-        "staking_fee": {
+        "staking": {
           "$ref": "#/definitions/Fee"
         },
-        "unbonding_fee": {
+        "unbonding": {
           "$ref": "#/definitions/Fee"
         }
       }
