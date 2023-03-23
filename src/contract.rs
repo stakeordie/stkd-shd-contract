@@ -168,7 +168,7 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
         ExecuteMsg::Claim {} => try_claim(deps, env, info),
         ExecuteMsg::CompoundRewards {} => try_compound_rewards(deps),
         ExecuteMsg::PanicUnbond { amount } => try_panic_unbond(deps, info, amount),
-        ExecuteMsg::PanicWithdraw { ids } => try_panic_withdraw(deps, info, ids),
+        ExecuteMsg::PanicWithdraw { ids } => try_panic_withdraw(deps, env, info, ids),
         ExecuteMsg::UpdateFees {
             staking_fee,
             unbonding_fee,
@@ -353,6 +353,7 @@ fn try_panic_unbond(deps: DepsMut, info: MessageInfo, amount: Uint128) -> StdRes
 
 fn try_panic_withdraw(
     deps: DepsMut,
+    env: Env,
     info: MessageInfo,
     ids: Option<Vec<Uint128>>,
 ) -> StdResult<Response> {
@@ -364,15 +365,36 @@ fn try_panic_withdraw(
         info.sender.to_string(),
         &constants.admin_contract_info,
     )?;
+    let addr = get_super_admin(&deps.querier, &constants)?;
+    let rewards = get_rewards(deps.querier, &env.contract.address, &staking_config)?;
+    let balance = get_available_shd(deps.querier, &env.contract.address, &staking_config)?;
+    let amount = Uint128::from(rewards + balance);
 
-    Ok(Response::default().add_submessage(SubMsg::reply_always(
-        withdraw_msg(
-            staking_config.staking_contract_info.code_hash,
-            staking_config.staking_contract_info.address.to_string(),
-            ids,
-        )?,
-        PANIC_WITHDRAW_REPLY_ID,
-    )))
+    Ok(Response::default()
+        .add_messages(vec![
+            claim_rewards_msg(
+                staking_config.staking_contract_info.code_hash.clone(),
+                staking_config.staking_contract_info.address.to_string(),
+            )?,
+            send_msg(
+                addr.to_string(),
+                amount,
+                None,
+                Some("Panic withdraw {} tokens".to_string()),
+                staking_config.shade_contract_info.entropy,
+                RESPONSE_BLOCK_SIZE,
+                staking_config.shade_contract_info.code_hash,
+                staking_config.shade_contract_info.address.to_string(),
+            )?,
+        ])
+        .add_submessage(SubMsg::reply_on_success(
+            withdraw_msg(
+                staking_config.staking_contract_info.code_hash,
+                staking_config.staking_contract_info.address.to_string(),
+                ids,
+            )?,
+            PANIC_WITHDRAW_REPLY_ID,
+        )))
 }
 
 /// Updates fee's information if provided
@@ -2049,18 +2071,37 @@ mod tests {
         );
 
         let staking_config = STAKING_CONFIG.load(&deps.storage).unwrap();
-
+        let rewards = 100000000_u128;
+        let balance = 100000000_u128;
+        let amount = Uint128::from(rewards + balance);
         assert_eq!(
             handle_result.unwrap(),
-            Response::default().add_submessage(SubMsg::reply_always(
-                withdraw_msg(
-                    staking_config.staking_contract_info.code_hash,
-                    staking_config.staking_contract_info.address.to_string(),
-                    None,
-                )
-                .unwrap(),
-                PANIC_WITHDRAW_REPLY_ID
-            ))
+            Response::default()
+                .add_messages(vec![
+                    claim_rewards_msg(
+                        staking_config.staking_contract_info.code_hash.clone(),
+                        staking_config.staking_contract_info.address.to_string(),
+                    ).unwrap(),
+                    send_msg(
+                        Addr::unchecked("super_admin").to_string(),
+                        amount,
+                        None,
+                        Some("Panic withdraw {} tokens".to_string()),
+                        staking_config.shade_contract_info.entropy,
+                        RESPONSE_BLOCK_SIZE,
+                        staking_config.shade_contract_info.code_hash,
+                        staking_config.shade_contract_info.address.to_string(),
+                    ).unwrap(),
+                ])
+                .add_submessage(SubMsg::reply_on_success(
+                    withdraw_msg(
+                        staking_config.staking_contract_info.code_hash,
+                        staking_config.staking_contract_info.address.to_string(),
+                        None,
+                    )
+                    .unwrap(),
+                    PANIC_WITHDRAW_REPLY_ID
+                ))
         );
     }
 }
