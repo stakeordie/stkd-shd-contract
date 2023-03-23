@@ -12,19 +12,19 @@ use crate::staking_interface::Unbonding;
 #[cfg_attr(test, derive(Eq, PartialEq))]
 pub struct Config {
     // Staking contract (SHADE-CUSTOM) information
-    pub staking_contract_info: ContractInfo,
+    pub staking: ContractInfo,
     pub staking_contract_vk: String,
     // Staking authentication contract (SHADE-CUSTOM) information
-    pub authentication_contract_info: ContractInfo,
+    pub query_auth: ContractInfo,
     // SHD (SNIP-20) information
-    pub shade_contract_info: ContractInfo,
-    pub shade_contract_vk: String,
+    pub token: ContractInfo,
+    pub token_contract_vk: String,
     // Derivative SNIP-20
-    pub derivative_contract_info: ContractInfo,
+    pub derivative: ContractInfo,
     // Fee collector and rate information
-    pub fee_info: FeeInfo,
+    pub fees: FeeInfo,
     pub contract_address: Addr,
-    pub admin_contract_info: Contract,
+    pub admin: Contract,
 }
 
 #[cfg_attr(test, derive(Eq, PartialEq))]
@@ -38,8 +38,8 @@ pub struct Fee {
 #[cfg_attr(test, derive(Eq, PartialEq))]
 #[derive(Serialize, Deserialize, Clone, JsonSchema, Debug)]
 pub struct FeeInfo {
-    pub staking_fee: Fee,
-    pub unbonding_fee: Fee,
+    pub staking: Fee,
+    pub unbonding: Fee,
 }
 
 #[cfg_attr(test, derive(Eq, PartialEq))]
@@ -55,12 +55,12 @@ pub struct ContractInfo {
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct InstantiateMsg {
     pub prng_seed: Binary,
-    pub staking_contract_info: ContractInfo,
-    pub authentication_contract_info: ContractInfo,
-    pub derivative_contract_info: ContractInfo,
-    pub shade_contract_info: ContractInfo,
-    pub admin_contract_info: Contract,
-    pub fee_info: FeeInfo,
+    pub staking: ContractInfo,
+    pub query_auth: ContractInfo,
+    pub derivative: ContractInfo,
+    pub token: ContractInfo,
+    pub admin: Contract,
+    pub fees: FeeInfo,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
@@ -69,8 +69,8 @@ pub enum ExecuteMsg {
     Claim {},
     CompoundRewards {},
     UpdateFees {
-        staking_fee: Option<Fee>,
-        unbonding_fee: Option<Fee>,
+        staking: Option<Fee>,
+        unbonding: Option<Fee>,
     },
     PanicUnbond {
         amount: Uint128,
@@ -233,8 +233,8 @@ pub enum QueryAnswer {
         price: Uint128,
     },
     FeeInfo {
-        staking_fee: Fee,
-        unbonding_fee: Fee,
+        staking: Fee,
+        unbonding: Fee,
     },
     ContractStatus {
         status: ContractStatusLevel,

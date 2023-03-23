@@ -55,7 +55,7 @@ pub fn instantiate(
     ViewingKey::set_seed(deps.storage, &sha_256(&prng_seed_hashed));
     // Generate viewing key for staking contract
     let entropy: String = msg
-        .staking_contract_info
+        .staking
         .entropy
         .clone()
         .unwrap_or_else(|| msg.prng_seed.to_string());
@@ -64,25 +64,25 @@ pub fn instantiate(
 
     // Generate viewing key for SHD contract
     let entropy: String = msg
-        .shade_contract_info
+        .token
         .entropy
         .clone()
         .unwrap_or_else(|| msg.prng_seed.to_string());
-    let (shade_contract_vk, _new_seed) =
+    let (token_contract_vk, _new_seed) =
         new_viewing_key(&info.sender, &env, &new_seed, entropy.as_ref());
 
     CONFIG.save(
         deps.storage,
         &Config {
             staking_contract_vk: staking_contract_vk.clone(),
-            shade_contract_vk: shade_contract_vk.clone(),
-            authentication_contract_info: msg.authentication_contract_info.clone(),
-            shade_contract_info: msg.shade_contract_info.clone(),
-            derivative_contract_info: msg.derivative_contract_info.clone(),
-            staking_contract_info: msg.staking_contract_info,
-            fee_info: msg.fee_info,
+            token_contract_vk: token_contract_vk.clone(),
+            query_auth: msg.query_auth.clone(),
+            token: msg.token.clone(),
+            derivative: msg.derivative.clone(),
+            staking: msg.staking,
+            fees: msg.fees,
             contract_address: env.contract.address.clone(),
-            admin_contract_info: msg.admin_contract_info,
+            admin: msg.admin,
         },
     )?;
     CONTRACT_STATUS.save(deps.storage, &ContractStatusLevel::NormalRun)?;
@@ -91,34 +91,34 @@ pub fn instantiate(
         // Register receive Derivative contract needed for Unbond functionality
         register_receive_msg(
             env.contract.code_hash.clone(),
-            msg.derivative_contract_info.entropy.clone(),
+            msg.derivative.entropy.clone(),
             RESPONSE_BLOCK_SIZE,
-            msg.derivative_contract_info.code_hash.clone(),
-            msg.derivative_contract_info.address.to_string(),
+            msg.derivative.code_hash.clone(),
+            msg.derivative.address.to_string(),
         )?,
         // Register receive SHD contract
         register_receive_msg(
             env.contract.code_hash,
-            msg.shade_contract_info.entropy.clone(),
+            msg.token.entropy.clone(),
             RESPONSE_BLOCK_SIZE,
-            msg.shade_contract_info.code_hash.clone(),
-            msg.shade_contract_info.address.to_string(),
+            msg.token.code_hash.clone(),
+            msg.token.address.to_string(),
         )?,
         // Set viewing key for SHD
         set_viewing_key_msg(
-            shade_contract_vk,
-            msg.shade_contract_info.entropy,
+            token_contract_vk,
+            msg.token.entropy,
             RESPONSE_BLOCK_SIZE,
-            msg.shade_contract_info.code_hash,
-            msg.shade_contract_info.address.to_string(),
+            msg.token.code_hash,
+            msg.token.address.to_string(),
         )?,
         // Set viewing key for staking contract
         set_viewing_key_msg(
             staking_contract_vk,
-            msg.authentication_contract_info.entropy,
+            msg.query_auth.entropy,
             RESPONSE_BLOCK_SIZE,
-            msg.authentication_contract_info.code_hash,
-            msg.authentication_contract_info.address.to_string(),
+            msg.query_auth.code_hash,
+            msg.query_auth.address.to_string(),
         )?,
     ];
 
@@ -150,9 +150,9 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
         ExecuteMsg::PanicUnbond { amount } => try_panic_unbond(deps, info, amount),
         ExecuteMsg::PanicWithdraw { ids } => try_panic_withdraw(deps, env, info, ids),
         ExecuteMsg::UpdateFees {
-            staking_fee,
-            unbonding_fee,
-        } => update_fees(deps, info, staking_fee, unbonding_fee),
+            staking,
+            unbonding,
+        } => update_fees(deps, info, staking, unbonding),
         //Receiver interface
         ExecuteMsg::Receive {
             sender: _,
@@ -233,10 +233,10 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> StdResult<Response> {
                     withdrawn,
                     None,
                     Some("Panic withdraw {} tokens".to_string()),
-                    config.shade_contract_info.entropy,
+                    config.token.entropy,
                     RESPONSE_BLOCK_SIZE,
-                    config.shade_contract_info.code_hash,
-                    config.shade_contract_info.address.to_string(),
+                    config.token.code_hash,
+                    config.token.address.to_string(),
                 )?))
             }
             None => Err(StdError::generic_err("Unknown reply id")),
@@ -281,8 +281,8 @@ fn try_claim(deps: DepsMut, env: Env, info: MessageInfo) -> StdResult<Response> 
     let config: Config = CONFIG.load(deps.storage)?;
     let messages: Vec<CosmosMsg> = vec![
         withdraw_msg(
-            config.staking_contract_info.code_hash,
-            config.staking_contract_info.address.to_string(),
+            config.staking.code_hash,
+            config.staking.address.to_string(),
             Some(to_claim_ids_uint128),
         )?,
         send_msg(
@@ -290,10 +290,10 @@ fn try_claim(deps: DepsMut, env: Env, info: MessageInfo) -> StdResult<Response> 
             amount_claimed,
             None,
             Some(format!("Claiming {} SHD tokens", { amount_claimed })),
-            config.shade_contract_info.entropy,
+            config.token.entropy,
             RESPONSE_BLOCK_SIZE,
-            config.shade_contract_info.code_hash,
-            config.shade_contract_info.address.to_string(),
+            config.token.code_hash,
+            config.token.address.to_string(),
         )?,
     ];
 
@@ -306,8 +306,8 @@ fn try_compound_rewards(deps: DepsMut) -> StdResult<Response> {
     let config = CONFIG.load(deps.storage)?;
 
     let msgs = vec![compound_msg(
-        config.staking_contract_info.code_hash,
-        config.staking_contract_info.address.to_string(),
+        config.staking.code_hash,
+        config.staking.address.to_string(),
     )?];
     Ok(Response::default().add_messages(msgs))
 }
@@ -318,12 +318,12 @@ fn try_panic_unbond(deps: DepsMut, info: MessageInfo, amount: Uint128) -> StdRes
         &deps.querier,
         AdminPermissions::DerivativeAdmin,
         info.sender.to_string(),
-        &config.admin_contract_info,
+        &config.admin,
     )?;
     let msgs = vec![unbond_msg(
         amount,
-        config.staking_contract_info.code_hash,
-        config.staking_contract_info.address.to_string(),
+        config.staking.code_hash,
+        config.staking.address.to_string(),
         Some(false),
     )?];
     Ok(Response::default().add_messages(msgs))
@@ -340,7 +340,7 @@ fn try_panic_withdraw(
         &deps.querier,
         AdminPermissions::DerivativeAdmin,
         info.sender.to_string(),
-        &config.admin_contract_info,
+        &config.admin,
     )?;
     let addr = get_super_admin(&deps.querier, &config)?;
     let rewards = get_rewards(deps.querier, &env.contract.address, &config)?;
@@ -350,24 +350,24 @@ fn try_panic_withdraw(
     Ok(Response::default()
         .add_messages(vec![
             claim_rewards_msg(
-                config.staking_contract_info.code_hash.clone(),
-                config.staking_contract_info.address.to_string(),
+                config.staking.code_hash.clone(),
+                config.staking.address.to_string(),
             )?,
             send_msg(
                 addr.to_string(),
                 amount,
                 None,
                 Some("Panic withdraw {} tokens".to_string()),
-                config.shade_contract_info.entropy,
+                config.token.entropy,
                 RESPONSE_BLOCK_SIZE,
-                config.shade_contract_info.code_hash,
-                config.shade_contract_info.address.to_string(),
+                config.token.code_hash,
+                config.token.address.to_string(),
             )?,
         ])
         .add_submessage(SubMsg::reply_on_success(
             withdraw_msg(
-                config.staking_contract_info.code_hash,
-                config.staking_contract_info.address.to_string(),
+                config.staking.code_hash,
+                config.staking.address.to_string(),
                 ids,
             )?,
             PANIC_WITHDRAW_REPLY_ID,
@@ -378,27 +378,27 @@ fn try_panic_withdraw(
 fn update_fees(
     deps: DepsMut,
     info: MessageInfo,
-    staking_fee: Option<Fee>,
-    unbonding_fee: Option<Fee>,
+    staking: Option<Fee>,
+    unbonding: Option<Fee>,
 ) -> StdResult<Response> {
     let mut config = CONFIG.load(deps.storage)?;
     check_if_admin(
         &deps.querier,
         AdminPermissions::DerivativeAdmin,
         info.sender.to_string(),
-        &config.admin_contract_info,
+        &config.admin,
     )?;
-    let fee_info: FeeInfo = FeeInfo {
-        staking_fee: staking_fee.unwrap_or(config.fee_info.staking_fee),
-        unbonding_fee: unbonding_fee.unwrap_or(config.fee_info.unbonding_fee),
+    let fees: FeeInfo = FeeInfo {
+        staking: staking.unwrap_or(config.fees.staking),
+        unbonding: unbonding.unwrap_or(config.fees.unbonding),
     };
-    config.fee_info = fee_info.clone();
+    config.fees = fees.clone();
     CONFIG.save(deps.storage, &config)?;
 
     Ok(
         Response::default().set_data(to_binary(&ExecuteAnswer::UpdateFees {
             status: Success,
-            fee: fee_info,
+            fee: fees,
         })?),
     )
 }
@@ -442,7 +442,7 @@ fn try_stake(
 ) -> StdResult<Response> {
     let config = CONFIG.load(deps.storage)?;
     let amount = Uint128::try_from(_amount)?;
-    if info.sender != config.shade_contract_info.address {
+    if info.sender != config.token.address {
         return Err(StdError::generic_err("Sender is not SHD contract"));
     }
 
@@ -450,7 +450,7 @@ fn try_stake(
         return Err(StdError::generic_err("No SHD was sent for staking"));
     }
 
-    let (fee, deposit) = get_fee(amount, &config.fee_info.staking_fee)?;
+    let (fee, deposit) = get_fee(amount, &config.fees.staking)?;
     // get available SHD + available rewards
     let (_, _, claiming) = get_delegatable(deps.querier, &env.contract.address, &config)?;
 
@@ -461,8 +461,8 @@ fn try_stake(
     let token_info = get_token_info(
         deps.querier,
         RESPONSE_BLOCK_SIZE,
-        config.derivative_contract_info.code_hash.clone(),
-        config.derivative_contract_info.address.to_string(),
+        config.derivative.code_hash.clone(),
+        config.derivative.address.to_string(),
     )?;
     let total_supply = token_info.total_supply.unwrap_or(Uint128::zero());
     // mint appropriate amount
@@ -487,25 +487,25 @@ fn try_stake(
             "Minted {} u_{} to stake {} SHD",
             mint, token_info.symbol, deposit
         )),
-        config.derivative_contract_info.entropy.clone(),
+        config.derivative.entropy.clone(),
         RESPONSE_BLOCK_SIZE,
-        config.derivative_contract_info.code_hash.clone(),
-        config.derivative_contract_info.address.to_string(),
+        config.derivative.code_hash.clone(),
+        config.derivative.address.to_string(),
     )?];
 
     // send fee to collector
     messages.push(send_msg(
-        config.fee_info.staking_fee.collector.to_string(),
+        config.fees.staking.collector.to_string(),
         fee,
         None,
         Some(format!(
             "Payment of fee for staking SHD using contract {}",
             env.contract.address
         )),
-        config.shade_contract_info.entropy.clone(),
+        config.token.entropy.clone(),
         RESPONSE_BLOCK_SIZE,
-        config.shade_contract_info.code_hash.clone(),
-        config.shade_contract_info.address.to_string(),
+        config.token.code_hash.clone(),
+        config.token.address.to_string(),
     )?);
 
     // Stake available SHD
@@ -536,12 +536,12 @@ fn try_unbond(
     let derivative_token_info = get_token_info(
         deps.querier,
         RESPONSE_BLOCK_SIZE,
-        config.derivative_contract_info.code_hash.clone(),
-        config.derivative_contract_info.address.to_string(),
+        config.derivative.code_hash.clone(),
+        config.derivative.address.to_string(),
     )?;
     let staking_info = get_staking_contract_config(deps.querier, &config)?;
     let amount = Uint128::try_from(_amount)?;
-    if info.sender != config.derivative_contract_info.address {
+    if info.sender != config.derivative.address {
         return Err(StdError::generic_err(
             "Sender is not derivative (SNIP20) contract",
         ));
@@ -567,7 +567,7 @@ fn try_unbond(
             .unwrap(),
     )?;
     // calculate the amount going to the user
-    let (_, shd_to_be_received) = get_fee(unbond_amount, &config.fee_info.unbonding_fee)?;
+    let (_, shd_to_be_received) = get_fee(unbond_amount, &config.fees.unbonding)?;
 
     if shd_to_be_received.is_zero() {
         return Err(StdError::generic_err(format!(
@@ -589,8 +589,8 @@ fn try_unbond(
     response = response.add_submessage(SubMsg::reply_always(
         unbond_msg(
             shd_to_be_received,
-            config.staking_contract_info.code_hash.clone(),
-            config.staking_contract_info.address.to_string(),
+            config.staking.code_hash.clone(),
+            config.staking.address.to_string(),
             Some(true),
         )?,
         UNBOND_REPLY_ID,
@@ -604,10 +604,10 @@ fn try_unbond(
                 "Burn {} derivatives to receive {} SHD",
                 amount, shd_to_be_received
             )),
-            config.derivative_contract_info.entropy,
+            config.derivative.entropy,
             RESPONSE_BLOCK_SIZE,
-            config.derivative_contract_info.code_hash.clone(),
-            config.derivative_contract_info.address.to_string(),
+            config.derivative.code_hash.clone(),
+            config.derivative.address.to_string(),
         )?)
         .set_data(to_binary(&ExecuteAnswer::Unbond {
             shd_to_be_received,
@@ -635,10 +635,10 @@ fn get_available_shd<C: CustomQuery>(
     let balance = balance_query(
         querier,
         contract_addr.to_string(),
-        config.shade_contract_vk.clone(),
+        config.token_contract_vk.clone(),
         RESPONSE_BLOCK_SIZE,
-        config.shade_contract_info.code_hash.to_string(),
-        config.shade_contract_info.address.to_string(),
+        config.token.code_hash.to_string(),
+        config.token.address.to_string(),
     )?;
 
     let available = balance.amount;
@@ -670,8 +670,8 @@ fn get_staked_shd<C: CustomQuery>(
         contract_addr.to_string(),
         config.staking_contract_vk.clone(),
         querier,
-        config.staking_contract_info.code_hash.to_string(),
-        config.staking_contract_info.address.to_string(),
+        config.staking.code_hash.to_string(),
+        config.staking.address.to_string(),
     )?;
 
     Ok(balance.amount.u128())
@@ -698,13 +698,13 @@ fn get_rewards<C: CustomQuery>(
         contract_addr.to_string(),
         config.staking_contract_vk.clone(),
         querier,
-        config.staking_contract_info.code_hash.to_string(),
-        config.staking_contract_info.address.to_string(),
+        config.staking.code_hash.to_string(),
+        config.staking.address.to_string(),
     )?;
     let item = rewards
         .rewards
         .iter()
-        .find(|r| r.token == config.shade_contract_info.address);
+        .find(|r| r.token == config.token.address);
 
     if let Some(reward) = item {
         Ok(reward.amount.u128())
@@ -748,8 +748,8 @@ fn get_staking_contract_config<C: CustomQuery>(
 ) -> StdResult<StakingConfig> {
     config_query(
         querier,
-        staking_info.staking_contract_info.code_hash.clone(),
-        staking_info.staking_contract_info.address.to_string(),
+        staking_info.staking.code_hash.clone(),
+        staking_info.staking.address.to_string(),
     )
 }
 /// Returns StdResult<u128>
@@ -789,7 +789,7 @@ fn get_super_admin(_: &QuerierWrapper, _: &Config) -> StdResult<Addr> {
 #[cfg(not(test))]
 fn get_super_admin(querier: &QuerierWrapper, config: &Config) -> StdResult<Addr> {
     let response: StdResult<ConfigResponse> =
-        AdminQueryMsg::GetConfig {}.query(querier, &config.admin_contract_info);
+        AdminQueryMsg::GetConfig {}.query(querier, &config.admin);
 
     match response {
         Ok(resp) => Ok(resp.super_admin),
@@ -892,14 +892,14 @@ fn generate_stake_msg(
         Some(to_binary(&format!("Staking {} SHD into staking contract", amount))?.to_base64());
     let msg = Some(to_binary(&Action::Stake { compound })?);
     send_msg(
-        config.staking_contract_info.address.to_string(),
+        config.staking.address.to_string(),
         amount,
         msg,
         memo,
-        config.shade_contract_info.entropy.clone(),
+        config.token.entropy.clone(),
         RESPONSE_BLOCK_SIZE,
-        config.shade_contract_info.code_hash.clone(),
-        config.shade_contract_info.address.to_string(),
+        config.token.code_hash.clone(),
+        config.token.address.to_string(),
     )
 }
 
@@ -939,7 +939,7 @@ fn set_contract_status(
         &deps.querier,
         AdminPermissions::DerivativeAdmin,
         info.sender.to_string(),
-        &config.admin_contract_info,
+        &config.admin,
     )?;
 
     CONTRACT_STATUS.save(deps.storage, &status_level)?;
@@ -1104,8 +1104,8 @@ fn query_staking_info(deps: &Deps, env: &Env) -> StdResult<Binary> {
     let derivative_info = get_token_info(
         deps.querier,
         RESPONSE_BLOCK_SIZE,
-        config.derivative_contract_info.code_hash.clone(),
-        config.derivative_contract_info.address.to_string(),
+        config.derivative.code_hash.clone(),
+        config.derivative.address.to_string(),
     )?;
     let bonded = get_staked_shd(deps.querier, &env.contract.address, &config)?;
     let rewards = get_rewards(deps.querier, &env.contract.address, &config)?;
@@ -1141,8 +1141,8 @@ fn query_fee_info(deps: &Deps) -> StdResult<Binary> {
     let config = CONFIG.load(deps.storage)?;
 
     to_binary(&QueryAnswer::FeeInfo {
-        staking_fee: config.fee_info.staking_fee,
-        unbonding_fee: config.fee_info.unbonding_fee,
+        staking: config.fees.staking,
+        unbonding: config.fees.unbonding,
     })
 }
 
@@ -1169,37 +1169,37 @@ mod tests {
 
         let init_msg = InstantiateMsg {
             prng_seed: Binary::from("lolz fun yay".as_bytes()),
-            derivative_contract_info: CustomContractInfo {
+            derivative: CustomContractInfo {
                 address: Addr::unchecked("derivative_snip20_info_address"),
                 code_hash: String::from("derivative_snip20_info_codehash"),
                 entropy: Some(String::from("4359o74nd8dnkjerjrh")),
             },
-            staking_contract_info: CustomContractInfo {
+            staking: CustomContractInfo {
                 address: Addr::unchecked("staking_contract_info_address"),
                 code_hash: String::from("staking_contract_info_code_hash"),
                 entropy: Some(String::from("4359o74nd8dnkjerjrh")),
             },
-            authentication_contract_info: CustomContractInfo {
+            query_auth: CustomContractInfo {
                 address: Addr::unchecked("authentication_contract_info_address"),
                 code_hash: String::from("authentication_contract_info_code_hash"),
                 entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
             },
-            shade_contract_info: CustomContractInfo {
+            token: CustomContractInfo {
                 address: Addr::unchecked("shade_contract_info_address"),
                 code_hash: String::from("shade_contract_info_code_hash"),
                 entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
             },
-            admin_contract_info: Contract {
+            admin: Contract {
                 address: Addr::unchecked("shade_contract_info_address"),
                 code_hash: String::from("shade_contract_info_code_hash"),
             },
-            fee_info: FeeInfo {
-                staking_fee: Fee {
+            fees: FeeInfo {
+                staking: Fee {
                     collector: Addr::unchecked("collector_address"),
                     rate: 5,
                     decimal_places: 2_u8,
                 },
-                unbonding_fee: Fee {
+                unbonding: Fee {
                     collector: Addr::unchecked("collector_address"),
                     rate: 5,
                     decimal_places: 2_u8,
@@ -1233,7 +1233,7 @@ mod tests {
         let env = mock_env();
         let info = mock_info("instantiator", &[]);
         let prnd = Binary::from("lolz fun yay".as_bytes());
-        let staking_contract_info = CustomContractInfo {
+        let staking = CustomContractInfo {
             address: Addr::unchecked("staking_contract_info_address"),
             code_hash: String::from("staking_contract_info_code_hash"),
             entropy: Some(String::from("4359o74nd8dnkjerjrh")),
@@ -1244,53 +1244,53 @@ mod tests {
             code_hash: String::from("authentication_contract_info_code_hash"),
             entropy: Some(String::from("ljkdsfgh9548605874easfnd")),
         };
-        let shade_contract_info = CustomContractInfo {
+        let token = CustomContractInfo {
             address: Addr::unchecked("shade_contract_info_address"),
             code_hash: String::from("shade_contract_info_code_hash"),
             entropy: Some(String::from("5sa4d6aweg473g87766h7712")),
         };
-        let derivative_contract_info = CustomContractInfo {
+        let derivative = CustomContractInfo {
             address: Addr::unchecked("derivative_snip20_info_address"),
             code_hash: String::from("derivative_snip20_info_codehash"),
             entropy: Some(String::from("4359o74nd8dnkjerjrh")),
         };
 
         // Generate viewing key for staking contract
-        let entropy: String = staking_contract_info.entropy.clone().unwrap();
+        let entropy: String = staking.entropy.clone().unwrap();
         let (staking_contract_vk, new_seed) =
             new_viewing_key(&info.sender.clone(), &env, &prnd.0, entropy.as_ref());
 
         // Generate viewing key for SHD contract
-        let entropy: String = shade_contract_info.entropy.clone().unwrap();
-        let (shade_contract_vk, _new_seed) =
+        let entropy: String = token.entropy.clone().unwrap();
+        let (token_contract_vk, _new_seed) =
             new_viewing_key(&info.sender.clone(), &env, &new_seed, entropy.as_ref());
 
         let msgs: Vec<CosmosMsg> = vec![
             // Register receive Derivative contract
             register_receive_msg(
                 env.contract.code_hash.clone(),
-                derivative_contract_info.entropy,
+                derivative.entropy,
                 RESPONSE_BLOCK_SIZE,
-                derivative_contract_info.code_hash,
-                derivative_contract_info.address.to_string(),
+                derivative.code_hash,
+                derivative.address.to_string(),
             )
             .unwrap(),
             // Register receive SHD contract
             register_receive_msg(
                 env.contract.code_hash,
-                shade_contract_info.entropy.clone(),
+                token.entropy.clone(),
                 RESPONSE_BLOCK_SIZE,
-                shade_contract_info.code_hash.clone(),
-                shade_contract_info.address.to_string(),
+                token.code_hash.clone(),
+                token.address.to_string(),
             )
             .unwrap(),
             // Set viewing key for SHD
             set_viewing_key_msg(
-                shade_contract_vk,
-                shade_contract_info.entropy,
+                token_contract_vk,
+                token.entropy,
                 RESPONSE_BLOCK_SIZE,
-                shade_contract_info.code_hash,
-                shade_contract_info.address.to_string(),
+                token.code_hash,
+                token.address.to_string(),
             )
             .unwrap(),
             // Set viewing key for staking contract
@@ -1661,8 +1661,8 @@ mod tests {
         );
 
         let handle_msg = ExecuteMsg::UpdateFees {
-            staking_fee: None,
-            unbonding_fee: None,
+            staking: None,
+            unbonding: None,
         };
         let info = mock_info("not_admin", &[]);
 
@@ -1687,8 +1687,8 @@ mod tests {
         );
         let config_before_tx = CONFIG.load(&deps.storage).unwrap();
         let handle_msg = ExecuteMsg::UpdateFees {
-            staking_fee: None,
-            unbonding_fee: None,
+            staking: None,
+            unbonding: None,
         };
         let info = mock_info("admin", &[]);
 
@@ -1701,7 +1701,7 @@ mod tests {
         );
         let config_after_tx = CONFIG.load(&deps.storage).unwrap();
 
-        assert_eq!(config_before_tx.fee_info, config_after_tx.fee_info);
+        assert_eq!(config_before_tx.fees, config_after_tx.fees);
     }
 
     #[test]
@@ -1714,12 +1714,12 @@ mod tests {
         );
         let config_before_tx = CONFIG.load(&deps.storage).unwrap();
         let handle_msg = ExecuteMsg::UpdateFees {
-            staking_fee: Some(Fee {
+            staking: Some(Fee {
                 collector: Addr::unchecked("new_collector"),
                 rate: 5_u32,
                 decimal_places: 2_u8,
             }),
-            unbonding_fee: None,
+            unbonding: None,
         };
         let info = mock_info("admin", &[]);
 
@@ -1732,16 +1732,16 @@ mod tests {
         );
         let config_after_tx = CONFIG.load(&deps.storage).unwrap();
 
-        assert_ne!(config_before_tx.fee_info, config_after_tx.fee_info);
+        assert_ne!(config_before_tx.fees, config_after_tx.fees);
 
         let answer: ExecuteAnswer = from_binary(&handle_result.unwrap().data.unwrap()).unwrap();
         let fee_info_returned = match answer {
             ExecuteAnswer::UpdateFees { fee, status: _ } => fee,
             _ => panic!("NOPE"),
         };
-        let fee_info = CONFIG.load(&deps.storage).unwrap().fee_info;
+        let fees = CONFIG.load(&deps.storage).unwrap().fees;
 
-        assert_eq!(fee_info_returned, fee_info)
+        assert_eq!(fee_info_returned, fees)
     }
 
     #[test]
@@ -1834,16 +1834,16 @@ mod tests {
         );
         let query_msg = QueryMsg::FeeInfo {};
         let query_result = query(deps.as_ref(), mock_env(), query_msg);
-        let (staking_fee, unbonding_fee) = match from_binary(&query_result.unwrap()).unwrap() {
+        let (staking, unbonding) = match from_binary(&query_result.unwrap()).unwrap() {
             QueryAnswer::FeeInfo {
-                staking_fee,
-                unbonding_fee,
-            } => (staking_fee, unbonding_fee),
+                staking,
+                unbonding,
+            } => (staking, unbonding),
             other => panic!("Unexpected: {:?}", other),
         };
 
         assert_eq!(
-            staking_fee,
+            staking,
             Fee {
                 collector: Addr::unchecked("collector_address"),
                 rate: 5,
@@ -1851,7 +1851,7 @@ mod tests {
             }
         );
         assert_eq!(
-            unbonding_fee,
+            unbonding,
             Fee {
                 collector: Addr::unchecked("collector_address"),
                 rate: 5,
@@ -1900,8 +1900,8 @@ mod tests {
         let config = CONFIG.load(&deps.storage).unwrap();
 
         let msgs = vec![compound_msg(
-            config.staking_contract_info.code_hash,
-            config.staking_contract_info.address.to_string(),
+            config.staking.code_hash,
+            config.staking.address.to_string(),
         )
         .unwrap()];
 
@@ -1960,8 +1960,8 @@ mod tests {
 
         let msgs = vec![unbond_msg(
             Uint128::from(100000000_u128),
-            config.staking_contract_info.code_hash,
-            config.staking_contract_info.address.to_string(),
+            config.staking.code_hash,
+            config.staking.address.to_string(),
             Some(false),
         )
         .unwrap()];
@@ -2022,8 +2022,8 @@ mod tests {
             Response::default()
                 .add_messages(vec![
                     claim_rewards_msg(
-                        config.staking_contract_info.code_hash.clone(),
-                        config.staking_contract_info.address.to_string(),
+                        config.staking.code_hash.clone(),
+                        config.staking.address.to_string(),
                     )
                     .unwrap(),
                     send_msg(
@@ -2031,17 +2031,17 @@ mod tests {
                         amount,
                         None,
                         Some("Panic withdraw {} tokens".to_string()),
-                        config.shade_contract_info.entropy,
+                        config.token.entropy,
                         RESPONSE_BLOCK_SIZE,
-                        config.shade_contract_info.code_hash,
-                        config.shade_contract_info.address.to_string(),
+                        config.token.code_hash,
+                        config.token.address.to_string(),
                     )
                     .unwrap(),
                 ])
                 .add_submessage(SubMsg::reply_on_success(
                     withdraw_msg(
-                        config.staking_contract_info.code_hash,
-                        config.staking_contract_info.address.to_string(),
+                        config.staking.code_hash,
+                        config.staking.address.to_string(),
                         None,
                     )
                     .unwrap(),
