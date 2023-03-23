@@ -51,6 +51,24 @@ pub fn instantiate(
     info: MessageInfo,
     msg: InstantiateMsg,
 ) -> StdResult<Response> {
+    let token_info = get_token_info(
+        deps.querier,
+        RESPONSE_BLOCK_SIZE,
+        msg.token.code_hash.clone(),
+        msg.token.address.to_string(),
+    )?;
+    let derivative_info = get_token_info(
+        deps.querier,
+        RESPONSE_BLOCK_SIZE,
+        msg.derivative.code_hash.clone(),
+        msg.derivative.address.to_string(),
+    )?;
+
+    if token_info.decimals != derivative_info.decimals {
+        return Err(StdError::generic_err(
+            "Derivative and token contracts should have the same amount of decimals",
+        ))
+    }
     let prng_seed_hashed = sha_256(&msg.prng_seed.0);
     ViewingKey::set_seed(deps.storage, &sha_256(&prng_seed_hashed));
     // Generate viewing key for staking contract
@@ -149,10 +167,9 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
         ExecuteMsg::CompoundRewards {} => try_compound_rewards(deps),
         ExecuteMsg::PanicUnbond { amount } => try_panic_unbond(deps, info, amount),
         ExecuteMsg::PanicWithdraw { ids } => try_panic_withdraw(deps, env, info, ids),
-        ExecuteMsg::UpdateFees {
-            staking,
-            unbonding,
-        } => update_fees(deps, info, staking, unbonding),
+        ExecuteMsg::UpdateFees { staking, unbonding } => {
+            update_fees(deps, info, staking, unbonding)
+        }
         //Receiver interface
         ExecuteMsg::Receive {
             sender: _,
@@ -1835,10 +1852,7 @@ mod tests {
         let query_msg = QueryMsg::FeeInfo {};
         let query_result = query(deps.as_ref(), mock_env(), query_msg);
         let (staking, unbonding) = match from_binary(&query_result.unwrap()).unwrap() {
-            QueryAnswer::FeeInfo {
-                staking,
-                unbonding,
-            } => (staking, unbonding),
+            QueryAnswer::FeeInfo { staking, unbonding } => (staking, unbonding),
             other => panic!("Unexpected: {:?}", other),
         };
 
@@ -1899,11 +1913,9 @@ mod tests {
 
         let config = CONFIG.load(&deps.storage).unwrap();
 
-        let msgs = vec![compound_msg(
-            config.staking.code_hash,
-            config.staking.address.to_string(),
-        )
-        .unwrap()];
+        let msgs = vec![
+            compound_msg(config.staking.code_hash, config.staking.address.to_string()).unwrap(),
+        ];
 
         assert_eq!(
             handle_result.unwrap(),
