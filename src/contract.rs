@@ -262,6 +262,20 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> StdResult<Response> {
     }
 }
 /************ HANDLES ************/
+/// It takes a list of unbonding ids, and if they are mature, it removes them from storage and sends the
+/// tokens to the user
+///
+/// Arguments:
+///
+/// * `deps`: DepsMut - This is the dependency struct that contains all the dependencies that the
+/// handler needs.
+/// * `env`: Env - This is the environment that the transaction is being executed in. It contains
+/// information about the block, the transaction, and the message.
+/// * `info`: MessageInfo - contains the sender of the message, the sent amount, and the sent memo
+///
+/// Returns:
+///
+/// StdResult<Response>
 fn try_claim(deps: DepsMut, env: Env, info: MessageInfo) -> StdResult<Response> {
     let sender = info.sender;
     let time = Uint128::from(env.block.time.seconds());
@@ -319,6 +333,16 @@ fn try_claim(deps: DepsMut, env: Env, info: MessageInfo) -> StdResult<Response> 
         .set_data(to_binary(&ExecuteAnswer::Claim { amount_claimed })?))
 }
 
+/// It creates a `compound_msg` and returns it as a `Response`
+///
+/// Arguments:
+///
+/// * `deps`: DepsMut - This is the dependencies object that contains the storage, querier, and other
+/// useful things.
+///
+/// Returns:
+///
+/// StdResult<Response>
 fn try_compound_rewards(deps: DepsMut) -> StdResult<Response> {
     let config = CONFIG.load(deps.storage)?;
 
@@ -329,6 +353,19 @@ fn try_compound_rewards(deps: DepsMut) -> StdResult<Response> {
     Ok(Response::default().add_messages(msgs))
 }
 
+/// It checks if the sender is an admin, and if so, it sends a message to the staking contract to unbond
+/// the given amount
+///
+/// Arguments:
+///
+/// * `deps`: DepsMut - This is the dependencies object that contains the storage, querier, and other
+/// useful objects.
+/// * `info`: MessageInfo - this is a struct that contains the sender, sent_funds, and sent_funds_count.
+/// * `amount`: The amount of tokens to unbond.
+///
+/// Returns:
+///
+/// StdResult<Response>.
 fn try_panic_unbond(deps: DepsMut, info: MessageInfo, amount: Uint128) -> StdResult<Response> {
     let config = CONFIG.load(deps.storage)?;
     check_if_admin(
@@ -346,6 +383,19 @@ fn try_panic_unbond(deps: DepsMut, info: MessageInfo, amount: Uint128) -> StdRes
     Ok(Response::default().add_messages(msgs))
 }
 
+/// It sends a message to the staking contract to claim rewards, then sends a message to the staking contract
+/// to withdraw the rewards and then sends available SHD balance to the super admin address
+///
+/// Arguments:
+///
+/// * `deps`: DepsMut,
+/// * `env`: The environment of the contract.
+/// * `info`: MessageInfo - contains the sender, sent_funds, and sent_funds_attachment
+/// * `ids`: Option<Vec<Uint128>>
+///
+/// Returns:
+///
+/// StdResult<Response>.
 fn try_panic_withdraw(
     deps: DepsMut,
     env: Env,
@@ -391,7 +441,18 @@ fn try_panic_withdraw(
         )))
 }
 
-/// Updates fee's information if provided
+/// `update_fees` updates the fees for staking and unbonding
+///
+/// Arguments:
+///
+/// * `deps`: DepsMut - This is the dependency object that contains the storage, querier, and logger.
+/// * `info`: MessageInfo - this is the information about the message that was sent to the contract.
+/// * `staking`: The fee for staking.
+/// * `unbonding`: Option<Fee>
+///
+/// Returns:
+///
+/// StdResult<Response>.
 fn update_fees(
     deps: DepsMut,
     info: MessageInfo,
@@ -420,6 +481,20 @@ fn update_fees(
     )
 }
 
+/// If the message is a `Stake` message, call `try_stake`, if it's an `Unbond` message, call
+/// `try_unbond`, otherwise return an error
+///
+/// Arguments:
+///
+/// * `deps`: This is a struct that contains all the dependencies that the contract needs to run.
+/// * `env`: The environment of the transaction.
+/// * `info`: MessageInfo - contains information about the message that was sent to the contract
+/// * `from`: The address of the sender
+/// * `amount`: The amount of tokens sent to the contract.
+///
+/// Returns:
+///
+/// Response::default()
 fn receive(
     deps: DepsMut,
     env: Env,
@@ -430,8 +505,8 @@ fn receive(
 ) -> StdResult<Response> {
     if let Some(x) = msg {
         match from_binary(&x)? {
-            ReceiverMsg::Stake {} => try_stake(deps, env, info, from, amount, Some(x)),
-            ReceiverMsg::Unbond {} => try_unbond(deps, env, info, from, amount, Some(x)),
+            ReceiverMsg::Stake {} => try_stake(deps, env, info, from, amount),
+            ReceiverMsg::Unbond {} => try_unbond(deps, env, info, from, amount),
             #[allow(unreachable_patterns)]
             _ => Err(StdError::generic_err(format!(
                 "Invalid msg provided, expected {} or {}",
@@ -443,22 +518,30 @@ fn receive(
         Ok(Response::default())
     }
 }
-/// Try to stake SHD received tokens
+
+
+/// `try_stake` takes a deposit of SHD and returns the equivalent mint of the derivative token
 ///
-/// Interacts directly with the Staking contract
+/// Arguments:
 ///
-/// @param amount of receiving tokens
+/// * `deps`: DepsMut,
+/// * `env`: The environment of the contract.
+/// * `info`: MessageInfo - contains information about the message that was sent to the contract
+/// * `from`: The address of the staker
+/// * `amt`: The amount of SHD to stake.
+///
+/// Returns:
+///
+/// The amount of tokens that were minted for the staking transaction.
 fn try_stake(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    // Staker address
     from: Addr,
-    _amount: Uint256,
-    _msg: Option<Binary>,
+    amt: Uint256,
 ) -> StdResult<Response> {
     let config = CONFIG.load(deps.storage)?;
-    let amount = Uint128::try_from(_amount)?;
+    let amount = Uint128::try_from(amt)?;
     if info.sender != config.token.address {
         return Err(StdError::generic_err("Sender is not SHD contract"));
     }
@@ -539,14 +622,27 @@ fn try_stake(
         .add_messages(messages))
 }
 
+/// `try_unbond` is called when a user sends a derivative token to the contract. The contract then
+/// calculates the amount of SHD that the user will receive and unbonds it from the staking contract
+/// this amount will be maturing in the unbondings for X amount of time
+///
+/// Arguments:
+///
+/// * `deps`: DepsMut,
+/// * `env`: The environment in which the contract is running.
+/// * `info`: MessageInfo - this is the information about the message that was sent to the contract.
+/// * `from`: The address of the user who is unbonding
+/// * `amt`: The amount of derivative tokens to be redeemed.
+///
+/// Returns:
+///
+/// The amount of SHD that will be received when the unbonding period is over.
 fn try_unbond(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    // address unbonding
     from: Addr,
-    _amount: Uint256,
-    _msg: Option<Binary>,
+    amt: Uint256,
 ) -> StdResult<Response> {
     let mut response = Response::new();
     let config = CONFIG.load(deps.storage)?;
@@ -557,7 +653,7 @@ fn try_unbond(
         config.derivative.address.to_string(),
     )?;
     let staking_info = get_staking_contract_config(deps.querier, &config)?;
-    let amount = Uint128::try_from(_amount)?;
+    let amount = Uint128::try_from(amt)?;
     if info.sender != config.derivative.address {
         return Err(StdError::generic_err(
             "Sender is not derivative (SNIP20) contract",
@@ -633,17 +729,22 @@ fn try_unbond(
                 .checked_add(staking_info.unbond_period)?,
         })?))
 }
-/// Returns StdResult<u128>
+
+
+/// It queries the token's balance of the contract address
 ///
-/// gets the amount of available SHD
-/// by querying contract balance
+/// Arguments:
 ///
-/// # Arguments
+/// * `querier`: The querier object that will be used to query the blockchain.
+/// * `contract_addr`: The address of the contract that we want to query.
+/// * `config`: The configuration object that contains the token contract address, token contract
+/// verifier key, and token code hash.
 ///
-/// * `config` - a mutable reference to the StakingConfig
+/// Returns:
+///
+/// The available SHD balance of the contract.
 #[cfg(not(test))]
 #[allow(dead_code)]
-// Allow warn code because mock queries make warnings to show up
 fn get_available_shd<C: CustomQuery>(
     querier: QuerierWrapper<C>,
     contract_addr: &Addr,
@@ -669,14 +770,19 @@ fn get_available_shd<C: CustomQuery>(
 ) -> StdResult<u128> {
     Ok(100000000_u128)
 }
-/// Returns StdResult<u128>
+
+
+/// It queries the staking contract to get the amount of staked SHD for the given contract address
 ///
-/// gets the amount of staked SHD
-/// by querying staking contract balance
+/// Arguments:
 ///
-/// # Arguments
+/// * `querier`: The querier object that will be used to query the blockchain.
+/// * `contract_addr`: The address of the contract that is being queried.
+/// * `config`: The configuration of the contract.
 ///
-/// * `config` - a mutable reference to the StakingConfig
+/// Returns:
+///
+/// The balance of the staking contract.
 #[cfg(not(test))]
 fn get_staked_shd<C: CustomQuery>(
     querier: QuerierWrapper<C>,
@@ -697,14 +803,20 @@ fn get_staked_shd<C: CustomQuery>(
 fn get_staked_shd<C: CustomQuery>(_: QuerierWrapper<C>, _: &Addr, _: &Config) -> StdResult<u128> {
     Ok(300000000)
 }
-/// Returns StdResult<u128>
+
+
+/// It queries the rewards generated for this contract address.
+/// Filters out to the token contract rewards and returns them as u128
 ///
-/// Gets amount of rewards generated
-/// in staking contract
+/// Arguments:
 ///
-/// # Arguments
+/// * `querier`: The querier object that will be used to query the blockchain.
+/// * `contract_addr`: The address of the contract that we want to query.
+/// * `config`: The configuration file that contains the contract addresses and other parameters.
 ///
-/// * `config` - a mutable reference to the StakingConfig
+/// Returns:
+///
+/// The rewards for the staking contract.
 #[cfg(not(test))]
 fn get_rewards<C: CustomQuery>(
     querier: QuerierWrapper<C>,
@@ -758,6 +870,16 @@ fn get_staking_contract_config<C: CustomQuery>(
     })
 }
 
+/// It queries the staking contract for its configuration
+///
+/// Arguments:
+///
+/// * `querier`: The querier object that will be used to query the contract.
+/// * `staking_info`: The staking contract information.
+///
+/// Returns:
+///
+/// StakingConfig
 #[cfg(not(test))]
 fn get_staking_contract_config<C: CustomQuery>(
     querier: QuerierWrapper<C>,
@@ -769,15 +891,21 @@ fn get_staking_contract_config<C: CustomQuery>(
         staking_info.staking.address.to_string(),
     )
 }
-/// Returns StdResult<u128>
+
+/// It gets the available and rewards balances, and returns the sum of the two
 ///
-/// Returns the amount of SHD available, the amount of claimable rewards,
-/// and the maximum amount of SHD available to stake if rewards al claimed
+/// Arguments:
 ///
-/// # Arguments
+/// * `querier`: The querier object that will be used to query the contract.
+/// * `contract_addr`: The address of the contract that you want to query.
+/// * `config`: The configuration of the contract.
 ///
-/// * `contract_addr` - this contract's address
-/// * `config` - a reference to the Config
+/// Returns:
+///
+/// a tuple of three values:
+/// - The first value is the amount of available SHD
+/// - The second value is the amount of rewards
+/// - The third value is the sum of the first two values
 #[cfg(not(test))]
 fn get_delegatable<C: CustomQuery>(
     querier: QuerierWrapper<C>,
@@ -803,6 +931,16 @@ fn get_delegatable<C: CustomQuery>(
 fn get_super_admin(_: &QuerierWrapper, _: &Config) -> StdResult<Addr> {
     Ok(Addr::unchecked("super_admin"))
 }
+/// It queries the `admin` contract for the `super_admin` address
+///
+/// Arguments:
+///
+/// * `querier`: The querier object that will be used to query the blockchain.
+/// * `config`: The configuration of the current contract.
+///
+/// Returns:
+///
+/// The address of the super admin.
 #[cfg(not(test))]
 fn get_super_admin(querier: &QuerierWrapper, config: &Config) -> StdResult<Addr> {
     let response: StdResult<ConfigResponse> =
@@ -813,15 +951,18 @@ fn get_super_admin(querier: &QuerierWrapper, config: &Config) -> StdResult<Addr>
         Err(err) => Err(err),
     }
 }
-/// Returns StdResult<(u128, u128)>
+
+
+/// It takes an amount and a fee config, and returns the fee and the remainder
 ///
-/// calculates a fee for the specified amount and returns the fee amount and the remaining
-/// amount
+/// Arguments:
 ///
-/// # Arguments
+/// * `amount`: The amount of tokens to be transferred
+/// * `fee_config`: The fee configuration for the transaction.
 ///
-/// * `rate` - fee rate
-/// * `amount` - the pre-fee amount
+/// Returns:
+///
+/// A tuple of two Uint128 values.
 pub fn get_fee(amount: Uint128, fee_config: &Fee) -> StdResult<(Uint128, Uint128)> {
     // first unwrap is ok because multiplying a u128 by a u32 can not overflow a u256
     // second unwrap is ok because we know we aren't dividing by zero
@@ -834,6 +975,20 @@ pub fn get_fee(amount: Uint128, fee_config: &Fee) -> StdResult<(Uint128, Uint128
     let remainder = amount.saturating_sub(fee);
     Ok((fee, remainder))
 }
+/// It queries the token contract for the token info, and
+/// if the total supply is not public, it returns an error
+///
+/// Arguments:
+///
+/// * `querier`: The querier object that will be used to query the blockchain.
+/// * `block_size`: The number of blocks to look back for the token's price.
+/// * `callback_code_hash`: The code hash of the contract that will be called when the derivative token
+/// is redeemed.
+/// * `contract_addr`: The address of the contract that holds the token.
+///
+/// Returns:
+///
+/// A TokenInfo struct
 #[cfg(not(test))]
 fn get_token_info<C: CustomQuery>(
     querier: QuerierWrapper<C>,
@@ -865,6 +1020,18 @@ fn get_token_info<C: CustomQuery>(
         total_supply: Some(Uint128::from(2000_u128)),
     })
 }
+/// It checks if the user is an admin, and if so, it returns `Ok(())`
+///
+/// Arguments:
+///
+/// * `querier`: The querier object that can be used to query the state of the blockchain.
+/// * `permission`: The permission you want to check for.
+/// * `user`: The user to check if they are an admin.
+/// * `admin_auth`: The contract that holds the admin permissions.
+///
+/// Returns:
+///
+/// A StdResult<()>
 #[cfg(not(test))]
 fn check_if_admin(
     querier: &QuerierWrapper,
@@ -891,15 +1058,20 @@ fn check_if_admin(
     Ok(())
 }
 
-/// Returns StdResult<CosmoMsg>
+/// It takes an amount of SHD to stake, a boolean indicating whether or not to compound the stake, and a
+/// configuration object, and returns a CosmosMsg object that can be used to send a transaction to the
+/// staking contract
 ///
-/// Generates a CosmoMsg sending SHD into
-/// Staking contract with the corresponding msg callback to stake it
+/// Arguments:
 ///
-/// # Arguments
+/// * `amount`: The amount of SHD to stake
+/// * `compound`: Whether to compound the interest or not.
+/// * `config`: The configuration file that contains the staking contract address, token address, token
+/// code hash, and entropy.
 ///
-/// * `amount` - amount intended to stake
-/// * `config` - a reference to the Config
+/// Returns:
+///
+/// A CosmosMsg
 fn generate_stake_msg(
     amount: Uint128,
     compound: Option<bool>,
@@ -920,6 +1092,18 @@ fn generate_stake_msg(
     )
 }
 
+/// `try_set_key` sets the viewing key for the sender of the message
+///
+/// Arguments:
+///
+/// * `deps`: DepsMut - this is a struct that contains all the dependencies that the contract needs to
+/// run.
+/// * `info`: MessageInfo - contains the sender of the message, the sent amount, and the sent message
+/// * `key`: The viewing key to set.
+///
+/// Returns:
+///
+/// The viewing key is being returned.
 pub fn try_set_key(deps: DepsMut, info: MessageInfo, key: String) -> StdResult<Response> {
     ViewingKey::set(deps.storage, info.sender.as_str(), key.as_str());
     Ok(
@@ -929,6 +1113,18 @@ pub fn try_set_key(deps: DepsMut, info: MessageInfo, key: String) -> StdResult<R
     )
 }
 
+/// It creates a new viewing key for the sender of the message
+///
+/// Arguments:
+///
+/// * `deps`: Dependencies of the module.
+/// * `env`: The environment of the transaction.
+/// * `info`: MessageInfo - contains the sender, the sent amount, and the sent message
+/// * `entropy`: A string of random characters that will be used to generate the private key.
+///
+/// Returns:
+///
+/// The viewing key is being returned.
 pub fn try_create_key(
     deps: DepsMut,
     env: Env,
@@ -946,6 +1142,17 @@ pub fn try_create_key(
     Ok(Response::new().set_data(to_binary(&ExecuteAnswer::CreateViewingKey { key })?))
 }
 
+/// It checks if the sender is an admin, and if so, it sets the contract status to the value passed in
+///
+/// Arguments:
+///
+/// * `deps`: DepsMut - This is the set of dependencies that the contract needs to run.
+/// * `info`: MessageInfo - contains the sender, sent_funds, and sent_funds_count
+/// * `status_level`: ContractStatusLevel
+///
+/// Returns:
+///
+/// The response is being returned.
 fn set_contract_status(
     deps: DepsMut,
     info: MessageInfo,
@@ -968,6 +1175,19 @@ fn set_contract_status(
     )
 }
 
+/// It revokes a permit
+///
+/// Arguments:
+///
+/// * `deps`: DepsMut - This is the dependency object that contains all the dependencies that the
+/// contract needs to run.
+/// * `info`: MessageInfo - this is a struct that contains the sender, sent_at, and other information
+/// about the message.
+/// * `permit_name`: The name of the permit to revoke.
+///
+/// Returns:
+///
+/// The response is being set to the data of the ExecuteAnswer::RevokePermit { status: Success }
 fn revoke_permit(deps: DepsMut, info: MessageInfo, permit_name: String) -> StdResult<Response> {
     RevokedPermits::revoke_permit(
         deps.storage,
@@ -1068,6 +1288,19 @@ pub fn viewing_keys_queries(deps: Deps, env: &Env, msg: QueryMsg) -> StdResult<B
     })
 }
 
+/// It loads all the unbonding ids for the given address, then for each unbonding id, it loads the
+/// unbonding, and if the unbonding is complete, it adds the amount to the claimable amount, otherwise
+/// it adds the amount to the unbonding amount
+///
+/// Arguments:
+///
+/// * `deps`: &Deps - this is the dependencies object that contains the storage, querier, and logger.
+/// * `env`: The environment of the current transaction.
+/// * `addr`: The address of the account to query
+///
+/// Returns:
+///
+/// The holdings of the address.
 fn query_holdings(deps: &Deps, env: &Env, addr: Addr) -> StdResult<Binary> {
     let mut derivative_claimable = Uint128::zero();
     let mut derivative_unbonding = Uint128::zero();
@@ -1092,6 +1325,17 @@ fn query_holdings(deps: &Deps, env: &Env, addr: Addr) -> StdResult<Binary> {
     })
 }
 
+/// It loads all unbonding ids for a given address, then loads all unbonding structs for those ids, and
+/// returns the result
+///
+/// Arguments:
+///
+/// * `deps`: &Deps - this is the dependencies object that contains the storage, querier, and logger.
+/// * `addr`: The address of the user whose unbondings we want to query.
+///
+/// Returns:
+///
+/// A vector of unbonding structs.
 fn query_unbondings(deps: &Deps, addr: Addr) -> StdResult<Binary> {
     let user_unbonds_ids = UnbondingIdsStore::load(deps.storage, &addr);
     let mut unbonds: Vec<Unbonding> = vec![];
@@ -1107,6 +1351,16 @@ fn query_unbondings(deps: &Deps, addr: Addr) -> StdResult<Binary> {
     to_binary(&QueryAnswer::Unbondings { unbonds })
 }
 
+/// It loads the contract status from the storage and returns it as a query answer
+///
+/// Arguments:
+///
+/// * `storage`: &dyn Storage - this is the storage that the contract will use to store and retrieve
+/// data.
+///
+/// Returns:
+///
+/// A QueryAnswer::ContractStatus
 fn query_contract_status(storage: &dyn Storage) -> StdResult<Binary> {
     let contract_status = CONTRACT_STATUS.load(storage)?;
 
@@ -1115,6 +1369,19 @@ fn query_contract_status(storage: &dyn Storage) -> StdResult<Binary> {
     })
 }
 
+/// It queries the staking contract for the amount of SHD bonded, the amount of SHD available, the
+/// amount of SHD in rewards, the total supply of the derivative token, and the price of the derivative
+/// token
+///
+/// Arguments:
+///
+/// * `deps`: &Deps - this is a struct that contains all the dependencies that the contract needs to
+/// run.
+/// * `env`: The environment of the contract.
+///
+/// Returns:
+///
+/// The query_staking_info function returns the staking information of the contract.
 fn query_staking_info(deps: &Deps, env: &Env) -> StdResult<Binary> {
     let config = CONFIG.load(deps.storage)?;
 
@@ -1154,6 +1421,15 @@ fn query_staking_info(deps: &Deps, env: &Env) -> StdResult<Binary> {
     })
 }
 
+/// It loads the fee configuration from the storage, and returns it as a binary
+///
+/// Arguments:
+///
+/// * `deps`: &Deps
+///
+/// Returns:
+///
+/// The fee information for staking and unbonding.
 fn query_fee_info(deps: &Deps) -> StdResult<Binary> {
     let config = CONFIG.load(deps.storage)?;
 
