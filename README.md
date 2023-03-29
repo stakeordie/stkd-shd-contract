@@ -88,9 +88,6 @@ interface InstantiateMsg {
   - [PanicUnbond](#PanicUnbond)
   - [PanicWithdraw](#PanicWithdraw)
   - [SetContractStatus](#SetContractStatus)
-  - [CreateViewingKey](#CreateViewingKey)
-  - [SetViewingKey](#SetViewingKey)
-  - [RevokePermit](#RevokePermit)
 
 **Queries**
   - [Holdings](#Holdings)
@@ -100,7 +97,7 @@ interface InstantiateMsg {
   - [ContractStatus](#ContractStatus)
 ## Messages
 
-#### Stake
+### Stake
 
 Calculates the equivalent amount of derivative per token sent.
 Triggered by Receiver interface when sending SHD tokens.
@@ -152,7 +149,7 @@ interface StakeMsgResponse {
 }
 ```
 
-#### Unbond
+### Unbond
 
 Calculates the equivalent amount of SHD per derivative sent.
 Triggered by Receiver interface when sending derivative tokens.
@@ -461,134 +458,6 @@ interface ContractStatusMsgResponse {
 ```json
 {
   "set_contract_status": {
-    "status": "success"
-  }
-}
-```
-
-### CreateViewingKey
-
-Creates a viewing key for the sender.
-
-**Request**
-
-```typescript
-interface ExecuteCreateViewingKeyMsg {
-  create_viewing_key: {
-    entropy: string;
-    padding?: string;
-  };
-}
-```
-
-```json
-{
-  "create_viewing_key": {
-    "entropy": "string as entropy",
-    "padding": "random string"
-  }
-}
-```
-
-**Response**
-
-```typescript
-interface CreateViewingKeyMsgResponse {
-  create_viewing_key: {
-    key: string;
-  };
-}
-```
-
-```json
-{
-  "create_viewing_key": {
-    "key": "mykey"
-  }
-}
-```
-
-### SetViewingKey
-
-Sets a viewing key for the sender.
-
-**Request**
-
-```typescript
-interface ExecuteSetViewingKeyMsg {
-  set_viewing_key: {
-    key: string;
-    padding?: string;
-  };
-}
-```
-
-```json
-{
-  "set_viewing_key": {
-    "key": "my_key",
-    "padding": "random string"
-  }
-}
-```
-
-**Response**
-
-```typescript
-import ResponseStatus from "shade-protocol";
-interface SetViewingKeyMsgResponse {
-  set_viewing_key: {
-    status: ResponseStatus;
-  };
-}
-```
-
-```json
-{
-  "set_viewing_key": {
-    "status": "success"
-  }
-}
-```
-
-### RevokePermit
-
-Revokes a permit for the sender.
-
-**Request**
-
-```typescript
-interface ExecuteRevokePermitMsg {
-  revoke_permit: {
-    permit_name: string;
-    padding?: string;
-  };
-}
-```
-
-```json
-{
-  "revoke_permit": {
-    "permit_name": "permit name",
-    "padding": "random string"
-  }
-}
-```
-
-**Response**
-
-```typescript
-import ResponseStatus from "shade-protocol";
-interface RevokePermitMsgResponse {
-  revoke_permit: {
-    status: ResponseStatus;
-  };
-}
-```
-
-```json
-{
-  "revoke_permit": {
     "status": "success"
   }
 }
