@@ -169,6 +169,7 @@ Calculates the equivalent amount of SHD per derivative sent.
 Triggered by Receiver interface when sending derivative tokens.
 
 🌐 Anyone can use this feature.
+
 **Request**
 
 ```typescript
