@@ -231,6 +231,7 @@ interface UnbondMsgResponse {
 This message claims user's mature unbondings in case there is any.
 
 🌐 Anyone can use this feature.
+
 **Request**
 
 ```typescript
@@ -310,6 +311,7 @@ interface CompoundRewardsMsgResponse {
 ```
 
 **Errors**
+
 There are no errors triggered by this contract but the `staking contract`.
 
 ### UpdateFees
