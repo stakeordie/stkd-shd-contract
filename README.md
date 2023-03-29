@@ -80,7 +80,6 @@ interface InstantiateMsg {
 
 ## Index
 **Messages**
-  - [Receive](#Receive)
   - [Stake](#Stake)
   - [Unbond](#Unbond)
   - [Claim](#Claim)
@@ -101,14 +100,11 @@ interface InstantiateMsg {
   - [ContractStatus](#ContractStatus)
 ## Messages
 
-### Receive
-
-Receiver interface that will be triggered when a user sends SHD or Derivatives to this contract.
-
 #### Stake
 
 Calculates the equivalent amount of derivative per token sent.
 Triggered by Receiver interface when sending SHD tokens.
+
 **Request**
 
 ```typescript
@@ -160,6 +156,7 @@ interface StakeMsgResponse {
 
 Calculates the equivalent amount of SHD per derivative sent.
 Triggered by Receiver interface when sending derivative tokens.
+
 **Request**
 
 ```typescript
@@ -390,6 +387,7 @@ interface ExecutePanicUnbondMsg {
 ```
 
 **Response**
+
 _Default response_
 
 ### PanicWithdraw
@@ -416,6 +414,7 @@ interface ExecutePanicWithdrawMsg {
 ```
 
 **Response**
+
 _Default response_
 
 ### SetContractStatus
