@@ -1,4 +1,6 @@
-use crate::msg::{status_level_to_u8, Config, InProcessUnbonding, QueryWithPermit, ReceiverMsg};
+use crate::msg::{
+    status_level_to_u8, Config, InProcessUnbonding, PanicUnbond, QueryWithPermit, ReceiverMsg,
+};
 use crate::msg::{
     ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InstantiateMsg, QueryAnswer, QueryMsg,
     ResponseStatus::Success,
@@ -13,8 +15,9 @@ use crate::staking_interface::{
     compound_msg, unbond_msg, withdraw_msg, UnbondResponse, Unbonding, WithdrawResponse,
 };
 use crate::state::{
-    UnbondingIdsStore, UnbondingStore, CONFIG, CONTRACT_STATUS, PANIC_WITHDRAW_REPLY_ID,
-    PENDING_UNBONDING, PREFIX_REVOKED_PERMITS, RESPONSE_BLOCK_SIZE, UNBOND_REPLY_ID,
+    UnbondingIdsStore, UnbondingStore, CONFIG, CONTRACT_STATUS, PANIC_UNBONDS,
+    PANIC_UNBOND_REPLY_ID, PANIC_WITHDRAW_REPLY_ID, PENDING_UNBONDING, PREFIX_REVOKED_PERMITS,
+    RESPONSE_BLOCK_SIZE, UNBOND_REPLY_ID,
 };
 /// This contract implements SNIP-20 standard:
 /// https://github.com/SecretFoundation/SNIPs/blob/master/SNIP-20.md
@@ -153,10 +156,10 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
         // Messages available during panic mode
         ExecuteMsg::Claim {} => try_claim(deps, env, info, ContractStatusLevel::Panicked),
         ExecuteMsg::PanicUnbond { amount } => {
-            try_panic_unbond(deps, info, amount, ContractStatusLevel::Panicked)
+            try_panic_unbond(env, deps, info, amount, ContractStatusLevel::Panicked)
         }
-        ExecuteMsg::PanicWithdraw { ids } => {
-            try_panic_withdraw(deps, env, info, ids, ContractStatusLevel::Panicked)
+        ExecuteMsg::PanicWithdraw {} => {
+            try_panic_withdraw(deps, env, info, ContractStatusLevel::Panicked)
         }
         ExecuteMsg::UpdateFees { staking, unbonding } => update_fees(
             deps,
@@ -259,6 +262,26 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> StdResult<Response> {
                     config.token.code_hash,
                     config.token.address.to_string(),
                 )?))
+            }
+            None => Err(StdError::generic_err("Unknown reply id")),
+        },
+
+        (PANIC_UNBOND_REPLY_ID, SubMsgResult::Ok(s)) => match s.data {
+            Some(x) => {
+                let result: UnbondResponse = from_binary(&x)?;
+                let mut panic_unbonds = PANIC_UNBONDS.may_load(deps.storage)?.unwrap_or_default();
+                let last = panic_unbonds.pop();
+
+                // Validate there is at least 1 element is storage to update
+                // should never happen but you never know
+                if let Some(mut last_unbond) = last {
+                    // Update latest panic unbond id
+                    last_unbond.id = result.unbond.id;
+                    panic_unbonds.push(last_unbond);
+                    //Save list of panic unbonds in storage
+                    PANIC_UNBONDS.save(deps.storage, &panic_unbonds)?;
+                }
+                Ok(Response::default())
             }
             None => Err(StdError::generic_err("Unknown reply id")),
         },
@@ -378,6 +401,7 @@ fn try_compound_rewards(deps: DepsMut, priority: ContractStatusLevel) -> StdResu
 ///
 /// StdResult<Response>.
 fn try_panic_unbond(
+    env: Env,
     deps: DepsMut,
     info: MessageInfo,
     amount: Uint128,
@@ -391,13 +415,26 @@ fn try_panic_unbond(
         info.sender.to_string(),
         &config.admin,
     )?;
-    let msgs = vec![unbond_msg(
+    // Store panic unbond
+    let staking_config = get_staking_contract_config(deps.querier, &config)?;
+    let complete: Uint128 =
+        Uint128::from(env.block.time.seconds()).checked_add(staking_config.unbond_period)?;
+    let mut panic_unbonds: Vec<PanicUnbond> =
+        PANIC_UNBONDS.may_load(deps.storage)?.unwrap_or_default();
+    panic_unbonds.push(PanicUnbond {
+        id: Uint128::zero(),
+        amount,
+        complete,
+    });
+    PANIC_UNBONDS.save(deps.storage, &panic_unbonds)?;
+
+    let msg = unbond_msg(
         amount,
         config.staking.code_hash,
         config.staking.address.to_string(),
         Some(false),
-    )?];
-    Ok(Response::default().add_messages(msgs))
+    )?;
+    Ok(Response::default().add_submessage(SubMsg::reply_always(msg, PANIC_UNBOND_REPLY_ID)))
 }
 
 /// It sends a message to the staking contract to claim rewards, then sends a message to the staking contract
@@ -417,7 +454,6 @@ fn try_panic_withdraw(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    ids: Option<Vec<Uint128>>,
     priority: ContractStatusLevel,
 ) -> StdResult<Response> {
     check_status(deps.storage, priority)?;
@@ -432,32 +468,49 @@ fn try_panic_withdraw(
     let rewards = get_rewards(deps.querier, &env.contract.address, &config)?;
     let balance = get_available_shd(deps.querier, &env.contract.address, &config)?;
     let amount = Uint128::from(rewards + balance);
+    let mut response = Response::default().add_messages(vec![
+        claim_rewards_msg(
+            config.staking.code_hash.clone(),
+            config.staking.address.to_string(),
+        )?,
+        send_msg(
+            addr.to_string(),
+            amount,
+            None,
+            Some("Panic withdraw {} tokens".to_string()),
+            config.token.entropy,
+            RESPONSE_BLOCK_SIZE,
+            config.token.code_hash,
+            config.token.address.to_string(),
+        )?,
+    ]);
+    let panic_unbonds = PANIC_UNBONDS.may_load(deps.storage)?;
+    if let Some(unbonds) = panic_unbonds {
+        let time = Uint128::from(env.block.time.seconds());
+        let mut to_withdraw: Vec<Uint128> = vec![];
+        let mut pending_unbonds: Vec<PanicUnbond> = vec![];
 
-    Ok(Response::default()
-        .add_messages(vec![
-            claim_rewards_msg(
-                config.staking.code_hash.clone(),
-                config.staking.address.to_string(),
-            )?,
-            send_msg(
-                addr.to_string(),
-                amount,
-                None,
-                Some("Panic withdraw {} tokens".to_string()),
-                config.token.entropy,
-                RESPONSE_BLOCK_SIZE,
-                config.token.code_hash,
-                config.token.address.to_string(),
-            )?,
-        ])
-        .add_submessage(SubMsg::reply_on_success(
+        for u in unbonds.into_iter() {
+            if time >= u.complete {
+                to_withdraw.push(u.id);
+            } else {
+                pending_unbonds.push(u);
+            }
+        }
+
+        PANIC_UNBONDS.save(deps.storage, &pending_unbonds)?;
+
+        response = response.add_submessage(SubMsg::reply_on_success(
             withdraw_msg(
                 config.staking.code_hash,
                 config.staking.address.to_string(),
-                ids,
+                Some(to_withdraw.clone()),
             )?,
             PANIC_WITHDRAW_REPLY_ID,
-        )))
+        ));
+    }
+
+    Ok(response)
 }
 
 /// `update_fees` updates the fees for staking and unbonding
@@ -650,7 +703,7 @@ fn try_stake(
     }
 
     Ok(Response::new()
-        .add_attribute("tokens_returned", mint)
+        .add_attribute("derivative_returned", mint)
         .set_data(to_binary(&ExecuteAnswer::Stake {
             shd_staked: deposit,
             tokens_returned: mint,
@@ -748,7 +801,7 @@ fn try_unbond(
     ));
 
     Ok(response
-        .add_attribute("amount_returned", shd_to_be_received)
+        .add_attribute("unbonded_amount", shd_to_be_received)
         .add_message(burn_msg(
             amount,
             Some(format!(
@@ -1703,7 +1756,7 @@ mod tests {
             handle_result.err().unwrap()
         );
 
-        let handle_msg = ExecuteMsg::PanicWithdraw { ids: None };
+        let handle_msg = ExecuteMsg::PanicWithdraw {};
         let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
         assert!(
             handle_result.is_ok(),
@@ -2347,17 +2400,20 @@ mod tests {
 
         let config = CONFIG.load(&deps.storage).unwrap();
 
-        let msgs = vec![unbond_msg(
-            Uint128::from(100000000_u128),
-            config.staking.code_hash,
-            config.staking.address.to_string(),
-            Some(false),
-        )
-        .unwrap()];
+        let msg = SubMsg::reply_always(
+            unbond_msg(
+                Uint128::from(100000000_u128),
+                config.staking.code_hash,
+                config.staking.address.to_string(),
+                Some(false),
+            )
+            .unwrap(),
+            PANIC_UNBOND_REPLY_ID,
+        );
 
         assert_eq!(
             handle_result.unwrap(),
-            Response::default().add_messages(msgs)
+            Response::default().add_submessage(msg)
         );
     }
 
@@ -2369,7 +2425,7 @@ mod tests {
             "Init failed: {}",
             init_result.err().unwrap()
         );
-        let handle_msg = ExecuteMsg::PanicWithdraw { ids: None };
+        let handle_msg = ExecuteMsg::PanicWithdraw {};
         let info = mock_info("bob", &[]);
 
         let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
@@ -2392,7 +2448,7 @@ mod tests {
             init_result.err().unwrap()
         );
 
-        let handle_msg = ExecuteMsg::PanicWithdraw { ids: None };
+        let handle_msg = ExecuteMsg::PanicWithdraw {};
         let info = mock_info("admin", &[]);
 
         let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
@@ -2408,34 +2464,24 @@ mod tests {
         let amount = Uint128::from(rewards + balance);
         assert_eq!(
             handle_result.unwrap(),
-            Response::default()
-                .add_messages(vec![
-                    claim_rewards_msg(
-                        config.staking.code_hash.clone(),
-                        config.staking.address.to_string(),
-                    )
-                    .unwrap(),
-                    send_msg(
-                        Addr::unchecked("super_admin").to_string(),
-                        amount,
-                        None,
-                        Some("Panic withdraw {} tokens".to_string()),
-                        config.token.entropy,
-                        RESPONSE_BLOCK_SIZE,
-                        config.token.code_hash,
-                        config.token.address.to_string(),
-                    )
-                    .unwrap(),
-                ])
-                .add_submessage(SubMsg::reply_on_success(
-                    withdraw_msg(
-                        config.staking.code_hash,
-                        config.staking.address.to_string(),
-                        None,
-                    )
-                    .unwrap(),
-                    PANIC_WITHDRAW_REPLY_ID
-                ))
+            Response::default().add_messages(vec![
+                claim_rewards_msg(
+                    config.staking.code_hash.clone(),
+                    config.staking.address.to_string(),
+                )
+                .unwrap(),
+                send_msg(
+                    Addr::unchecked("super_admin").to_string(),
+                    amount,
+                    None,
+                    Some("Panic withdraw {} tokens".to_string()),
+                    config.token.entropy,
+                    RESPONSE_BLOCK_SIZE,
+                    config.token.code_hash,
+                    config.token.address.to_string(),
+                )
+                .unwrap(),
+            ])
         );
     }
 }

@@ -75,9 +75,7 @@ pub enum ExecuteMsg {
     PanicUnbond {
         amount: Uint128,
     },
-    PanicWithdraw {
-        ids: Option<Vec<Uint128>>,
-    },
+    PanicWithdraw {},
     //Receiver interface
     Receive {
         sender: Addr,
@@ -248,6 +246,13 @@ pub enum QueryAnswer {
 pub struct InProcessUnbonding {
     pub id: Uint128,
     pub owner: Addr,
+    pub amount: Uint128,
+    pub complete: Uint128,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PanicUnbond {
+    pub id: Uint128,
     pub amount: Uint128,
     pub complete: Uint128,
 }
