@@ -452,17 +452,13 @@ This funds will be sent to `super admin`.
 
 ```typescript
 interface ExecutePanicWithdrawMsg {
-  panic_withdraw: {
-    ids: string[];
-  };
+  panic_withdraw: {  };
 }
 ```
 
 ```json
 {
-  "panic_withdraw": {
-    "ids": ["100000000"]
-  }
+  "panic_withdraw": {  }
 }
 ```
 
@@ -487,6 +483,7 @@ Sets contract status.
 ```typescript
 enum ContractStatusLevel {
   NormalRun,
+  Panicked
   StopAll,
 }
 
