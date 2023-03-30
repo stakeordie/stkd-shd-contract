@@ -1,4 +1,4 @@
-use crate::msg::{Config, InProcessUnbonding, QueryWithPermit, ReceiverMsg};
+use crate::msg::{status_level_to_u8, Config, InProcessUnbonding, QueryWithPermit, ReceiverMsg};
 use crate::msg::{
     ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InstantiateMsg, QueryAnswer, QueryMsg,
     ResponseStatus::Success,
@@ -67,7 +67,7 @@ pub fn instantiate(
     if token_info.decimals != derivative_info.decimals {
         return Err(StdError::generic_err(
             "Derivative and token contracts should have the same amount of decimals",
-        ))
+        ));
     }
     let prng_seed_hashed = sha_256(&msg.prng_seed.0);
     ViewingKey::set_seed(deps.storage, &sha_256(&prng_seed_hashed));
@@ -145,42 +145,46 @@ pub fn instantiate(
 
 #[entry_point]
 pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> StdResult<Response> {
-    let contract_status = CONTRACT_STATUS.load(deps.storage)?;
-
-    match contract_status {
-        ContractStatusLevel::StopAll => {
-            let response = match msg {
-                ExecuteMsg::SetContractStatus { level, .. } => {
-                    set_contract_status(deps, info, level)
-                }
-                _ => Err(StdError::generic_err(
-                    "This contract is stopped and this action is not allowed",
-                )),
-            };
-            return pad_handle_result(response, RESPONSE_BLOCK_SIZE);
-        }
-        ContractStatusLevel::NormalRun => {} // If it's a normal run just continue
-    }
-
     let response = match msg {
-        ExecuteMsg::Claim {} => try_claim(deps, env, info),
-        ExecuteMsg::CompoundRewards {} => try_compound_rewards(deps),
-        ExecuteMsg::PanicUnbond { amount } => try_panic_unbond(deps, info, amount),
-        ExecuteMsg::PanicWithdraw { ids } => try_panic_withdraw(deps, env, info, ids),
-        ExecuteMsg::UpdateFees { staking, unbonding } => {
-            update_fees(deps, info, staking, unbonding)
+        // Messages always available
+        ExecuteMsg::SetContractStatus { level, .. } => {
+            set_contract_status(deps, info, level, ContractStatusLevel::StopAll)
         }
-        //Receiver interface
+        // Messages available during panic mode
+        ExecuteMsg::Claim {} => try_claim(deps, env, info, ContractStatusLevel::Panicked),
+        ExecuteMsg::PanicUnbond { amount } => {
+            try_panic_unbond(deps, info, amount, ContractStatusLevel::Panicked)
+        }
+        ExecuteMsg::PanicWithdraw { ids } => {
+            try_panic_withdraw(deps, env, info, ids, ContractStatusLevel::Panicked)
+        }
+        ExecuteMsg::UpdateFees { staking, unbonding } => update_fees(
+            deps,
+            info,
+            staking,
+            unbonding,
+            ContractStatusLevel::Panicked,
+        ),
+
+        // Messages available when status is normal
         ExecuteMsg::Receive {
             sender: _,
             from,
             amount,
             msg,
         } => receive(deps, env, info, from, amount, msg),
-        ExecuteMsg::CreateViewingKey { entropy, .. } => try_create_key(deps, env, info, entropy),
-        ExecuteMsg::SetViewingKey { key, .. } => try_set_key(deps, info, key),
-        ExecuteMsg::SetContractStatus { level, .. } => set_contract_status(deps, info, level),
-        ExecuteMsg::RevokePermit { permit_name, .. } => revoke_permit(deps, info, permit_name),
+        ExecuteMsg::CompoundRewards {} => {
+            try_compound_rewards(deps, ContractStatusLevel::NormalRun)
+        }
+        ExecuteMsg::CreateViewingKey { entropy, .. } => {
+            try_create_key(deps, env, info, entropy, ContractStatusLevel::NormalRun)
+        }
+        ExecuteMsg::SetViewingKey { key, .. } => {
+            try_set_key(deps, info, key, ContractStatusLevel::NormalRun)
+        }
+        ExecuteMsg::RevokePermit { permit_name, .. } => {
+            revoke_permit(deps, info, permit_name, ContractStatusLevel::NormalRun)
+        }
     };
 
     pad_handle_result(response, RESPONSE_BLOCK_SIZE)
@@ -276,7 +280,13 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> StdResult<Response> {
 /// Returns:
 ///
 /// StdResult<Response>
-fn try_claim(deps: DepsMut, env: Env, info: MessageInfo) -> StdResult<Response> {
+fn try_claim(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    priority: ContractStatusLevel,
+) -> StdResult<Response> {
+    check_status(deps.storage, priority)?;
     let sender = info.sender;
     let time = Uint128::from(env.block.time.seconds());
     let user_unbondings_ids = UnbondingIdsStore::load(deps.storage, &sender);
@@ -343,7 +353,8 @@ fn try_claim(deps: DepsMut, env: Env, info: MessageInfo) -> StdResult<Response> 
 /// Returns:
 ///
 /// StdResult<Response>
-fn try_compound_rewards(deps: DepsMut) -> StdResult<Response> {
+fn try_compound_rewards(deps: DepsMut, priority: ContractStatusLevel) -> StdResult<Response> {
+    check_status(deps.storage, priority)?;
     let config = CONFIG.load(deps.storage)?;
 
     let msgs = vec![compound_msg(
@@ -366,7 +377,13 @@ fn try_compound_rewards(deps: DepsMut) -> StdResult<Response> {
 /// Returns:
 ///
 /// StdResult<Response>.
-fn try_panic_unbond(deps: DepsMut, info: MessageInfo, amount: Uint128) -> StdResult<Response> {
+fn try_panic_unbond(
+    deps: DepsMut,
+    info: MessageInfo,
+    amount: Uint128,
+    priority: ContractStatusLevel,
+) -> StdResult<Response> {
+    check_status(deps.storage, priority)?;
     let config = CONFIG.load(deps.storage)?;
     check_if_admin(
         &deps.querier,
@@ -401,7 +418,9 @@ fn try_panic_withdraw(
     env: Env,
     info: MessageInfo,
     ids: Option<Vec<Uint128>>,
+    priority: ContractStatusLevel,
 ) -> StdResult<Response> {
+    check_status(deps.storage, priority)?;
     let config = CONFIG.load(deps.storage)?;
     check_if_admin(
         &deps.querier,
@@ -458,7 +477,9 @@ fn update_fees(
     info: MessageInfo,
     staking: Option<Fee>,
     unbonding: Option<Fee>,
+    priority: ContractStatusLevel,
 ) -> StdResult<Response> {
+    check_status(deps.storage, priority)?;
     let mut config = CONFIG.load(deps.storage)?;
     check_if_admin(
         &deps.querier,
@@ -505,8 +526,22 @@ fn receive(
 ) -> StdResult<Response> {
     if let Some(x) = msg {
         match from_binary(&x)? {
-            ReceiverMsg::Stake {} => try_stake(deps, env, info, from, amount),
-            ReceiverMsg::Unbond {} => try_unbond(deps, env, info, from, amount),
+            ReceiverMsg::Stake {} => try_stake(
+                deps,
+                env,
+                info,
+                from,
+                amount,
+                ContractStatusLevel::NormalRun,
+            ),
+            ReceiverMsg::Unbond {} => try_unbond(
+                deps,
+                env,
+                info,
+                from,
+                amount,
+                ContractStatusLevel::NormalRun,
+            ),
             #[allow(unreachable_patterns)]
             _ => Err(StdError::generic_err(format!(
                 "Invalid msg provided, expected {} or {}",
@@ -518,7 +553,6 @@ fn receive(
         Ok(Response::default())
     }
 }
-
 
 /// `try_stake` takes a deposit of SHD and returns the equivalent mint of the derivative token
 ///
@@ -539,7 +573,9 @@ fn try_stake(
     info: MessageInfo,
     from: Addr,
     amt: Uint256,
+    priority: ContractStatusLevel,
 ) -> StdResult<Response> {
+    check_status(deps.storage, priority)?;
     let config = CONFIG.load(deps.storage)?;
     let amount = Uint128::try_from(amt)?;
     if info.sender != config.token.address {
@@ -643,7 +679,9 @@ fn try_unbond(
     info: MessageInfo,
     from: Addr,
     amt: Uint256,
+    priority: ContractStatusLevel,
 ) -> StdResult<Response> {
+    check_status(deps.storage, priority)?;
     let mut response = Response::new();
     let config = CONFIG.load(deps.storage)?;
     let derivative_token_info = get_token_info(
@@ -730,7 +768,6 @@ fn try_unbond(
         })?))
 }
 
-
 /// It queries the token's balance of the contract address
 ///
 /// Arguments:
@@ -771,7 +808,6 @@ fn get_available_shd<C: CustomQuery>(
     Ok(100000000_u128)
 }
 
-
 /// It queries the staking contract to get the amount of staked SHD for the given contract address
 ///
 /// Arguments:
@@ -803,7 +839,6 @@ fn get_staked_shd<C: CustomQuery>(
 fn get_staked_shd<C: CustomQuery>(_: QuerierWrapper<C>, _: &Addr, _: &Config) -> StdResult<u128> {
     Ok(300000000)
 }
-
 
 /// It queries the rewards generated for this contract address.
 /// Filters out to the token contract rewards and returns them as u128
@@ -951,7 +986,6 @@ fn get_super_admin(querier: &QuerierWrapper, config: &Config) -> StdResult<Addr>
         Err(err) => Err(err),
     }
 }
-
 
 /// It takes an amount and a fee config, and returns the fee and the remainder
 ///
@@ -1104,7 +1138,13 @@ fn generate_stake_msg(
 /// Returns:
 ///
 /// The viewing key is being returned.
-pub fn try_set_key(deps: DepsMut, info: MessageInfo, key: String) -> StdResult<Response> {
+pub fn try_set_key(
+    deps: DepsMut,
+    info: MessageInfo,
+    key: String,
+    priority: ContractStatusLevel,
+) -> StdResult<Response> {
+    check_status(deps.storage, priority)?;
     ViewingKey::set(deps.storage, info.sender.as_str(), key.as_str());
     Ok(
         Response::new().set_data(to_binary(&ExecuteAnswer::SetViewingKey {
@@ -1130,7 +1170,9 @@ pub fn try_create_key(
     env: Env,
     info: MessageInfo,
     entropy: String,
+    priority: ContractStatusLevel,
 ) -> StdResult<Response> {
+    check_status(deps.storage, priority)?;
     let key = ViewingKey::create(
         deps.storage,
         &info,
@@ -1157,8 +1199,10 @@ fn set_contract_status(
     deps: DepsMut,
     info: MessageInfo,
     status_level: ContractStatusLevel,
+    priority: ContractStatusLevel,
 ) -> StdResult<Response> {
     let config = CONFIG.load(deps.storage)?;
+    check_status(deps.storage, priority)?;
     check_if_admin(
         &deps.querier,
         AdminPermissions::DerivativeAdmin,
@@ -1188,7 +1232,13 @@ fn set_contract_status(
 /// Returns:
 ///
 /// The response is being set to the data of the ExecuteAnswer::RevokePermit { status: Success }
-fn revoke_permit(deps: DepsMut, info: MessageInfo, permit_name: String) -> StdResult<Response> {
+fn revoke_permit(
+    deps: DepsMut,
+    info: MessageInfo,
+    permit_name: String,
+    priority: ContractStatusLevel,
+) -> StdResult<Response> {
+    check_status(deps.storage, priority)?;
     RevokedPermits::revoke_permit(
         deps.storage,
         PREFIX_REVOKED_PERMITS,
@@ -1225,6 +1275,26 @@ pub fn new_viewing_key(
     (viewing_key, rand_slice)
 }
 
+/// If the contract admin has disabled the contract, then this function will return an error
+///
+/// Arguments:
+///
+/// * `storage`: The storage object that is passed to the contract.
+/// * `priority`: The priority of the action being performed.
+///
+/// Returns:
+///
+/// Ok is messages is allowed.
+fn check_status(storage: &dyn Storage, priority: ContractStatusLevel) -> StdResult<()> {
+    let contract_status = CONTRACT_STATUS.load(storage)?;
+
+    if status_level_to_u8(priority) < status_level_to_u8(contract_status) {
+        return Err(StdError::generic_err(
+            "The contract admin has temporarily disabled this action",
+        ));
+    }
+    Ok(())
+}
 /************ QUERIES ************/
 
 fn permit_queries(
@@ -1611,6 +1681,37 @@ mod tests {
             is_vk_correct.err().unwrap()
         );
     }
+
+    #[test]
+    fn test_panic_messages_when_contract_panicked() {
+        let (init_result, mut deps) = init_helper();
+        let info = mock_info("admin", &[]);
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::SetContractStatus {
+            level: ContractStatusLevel::Panicked,
+            padding: None,
+        };
+        let handle_result = execute(deps.as_mut(), mock_env(), info.clone(), handle_msg);
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::PanicWithdraw { ids: None };
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+    }
+
     #[test]
     fn test_handle_create_viewing_key() {
         let (init_result, mut deps) = init_helper();
