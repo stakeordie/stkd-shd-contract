@@ -1,6 +1,6 @@
 # Derivative minter contract
 
-This contract enables users to send SHD(or any SNIP-20) and receive a staking derivative token that can later be sent to the contract to unbond the sent amount's value in SHD(SNIP-20).
+This contract enables users to send SHD (or any SNIP-20) and receive a staking derivative token that can later be sent to the contract to unbond the sent amount's value in SHD (SNIP-20).
 
 ## Init Message
 
