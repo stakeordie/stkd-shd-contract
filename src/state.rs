@@ -10,7 +10,6 @@ pub const KEY_STAKING_INFO: &[u8] = b"staking_info";
 pub const KEY_PANIC_UNBONDS: &[u8] = b"panic_unbonds_ids";
 pub const KEY_PENDING_UNBONDING: &[u8] = b"last_unbonding_id";
 pub const KEY_CONTRACT_STATUS: &[u8] = b"contract_status";
-pub const PREFIX_REVOKED_PERMITS: &str = "revoked_permits";
 pub const PREFIX_UNBONDINGS_IDS: &[u8] = b"unbondings_ids";
 pub const PREFIX_UNBONDINGS: &[u8] = b"unbondings";
 pub const RESPONSE_BLOCK_SIZE: usize = 256;
