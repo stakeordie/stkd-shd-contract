@@ -2,6 +2,76 @@
 
 This contract enables users to send SHD (or any SNIP-20) and receive a staking derivative token that can later be sent to the contract to unbond the sent amount's value in SHD (SNIP-20).
 
+## Index
+
+**[How to deploy](#deploy)**
+
+**[Instantiation message](#init)**
+
+**Messages**
+
+- [Stake](#Stake)
+- [Unbond](#Unbond)
+- [Claim](#Claim)
+- [CompoundRewards](#CompoundRewards)
+- [UpdateFees](#UpdateFees)
+- [PanicUnbond](#PanicUnbond)
+- [PanicWithdraw](#PanicWithdraw)
+- [SetContractStatus](#SetContractStatus)
+
+**Queries**
+
+- [Holdings](#Holdings)
+- [StakingInfo](#StakingInfo)
+- [Unbondings](#Unbondings)
+- [FeeInfo](#FeeInfo)
+- [ContractStatus](#ContractStatus)
+
+<a id="deploy"></a>
+
+## How to deploy
+
+### Requirements
+
+- [SecretCLI installed and configured](https://docs.scrt.network/secret-network-documentation/development/tools-and-libraries/secret-cli)
+- Account with funds (~2 scrt)
+
+#### Steps
+
+1. Make sure you have the docker demon turned on.
+2. Open project in a terminal.
+3. Compile and optimized contract. In the root folder run this command:
+
+```shell
+make compile-optimized-reproducible
+```
+4. Store contract on chain.
+```shell
+secretcli tx compute store contract.wasm.gz --from <ACCOUNT_NAME> -y --gas 3000000 | jq
+```
+5. Query contract code id
+```shell
+CODE_ID=$(secretcli q compute list-code | jq '.[-1].code_id')
+```
+6. Instantiate a new contract
+```shell
+TX_HASH=$(secretcli tx compute instantiate ${CODE_ID} '<INIT_MSG>' --from <ACCOUNT_NAME> -y --gas 3000000 --label $(openssl rand -base64 12 | tr -d /=+ | cut -c -16) | jq '.txhash' | sed 's/^"\|"$//g')
+```
+
+7. Query contract's address
+```shell
+secretcli q compute tx ${TX_HASH} | jq '.output_logs[0].attributes[0].value' | sed 's/^"\|"$//g'
+```
+
+#### Troubleshooting
+
+- Query transaction's status
+```shell
+secretcli q compute tx <TX_HASH> | jq
+```
+
+<a id="init"></a>
+
 ## Init Message
 
 ```ts
@@ -77,27 +147,6 @@ interface InstantiateMsg {
   }
 }
 ```
-
-## Index
-
-**Messages**
-
-- [Stake](#Stake)
-- [Unbond](#Unbond)
-- [Claim](#Claim)
-- [CompoundRewards](#CompoundRewards)
-- [UpdateFees](#UpdateFees)
-- [PanicUnbond](#PanicUnbond)
-- [PanicWithdraw](#PanicWithdraw)
-- [SetContractStatus](#SetContractStatus)
-
-**Queries**
-
-- [Holdings](#Holdings)
-- [StakingInfo](#StakingInfo)
-- [Unbondings](#Unbondings)
-- [FeeInfo](#FeeInfo)
-- [ContractStatus](#ContractStatus)
 
 ## Messages
 
@@ -452,13 +501,13 @@ This funds will be sent to `super admin`.
 
 ```typescript
 interface ExecutePanicWithdrawMsg {
-  panic_withdraw: {  };
+  panic_withdraw: {};
 }
 ```
 
 ```json
 {
-  "panic_withdraw": {  }
+  "panic_withdraw": {}
 }
 ```
 
