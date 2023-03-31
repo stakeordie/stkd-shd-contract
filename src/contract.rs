@@ -1,23 +1,18 @@
 use crate::msg::{
-    status_level_to_u8, Config, InProcessUnbonding, PanicUnbond, QueryWithPermit, ReceiverMsg,
-};
-use crate::msg::{
     ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InstantiateMsg, QueryAnswer, QueryMsg,
-    ResponseStatus::Success,
+    ResponseStatus::Success,status_level_to_u8, Config, InProcessUnbonding, PanicUnbond, QueryWithPermit, ReceiverMsg,
 };
 
 #[allow(unused_imports)]
 use crate::staking_interface::{
     balance_query as staking_balance_query, claim_rewards_msg, config_query, rewards_query, Action,
-    RawContract, StakingConfig,
+    RawContract, StakingConfig,compound_msg, unbond_msg, withdraw_msg, UnbondResponse, Unbonding, WithdrawResponse,
 };
-use crate::staking_interface::{
-    compound_msg, unbond_msg, withdraw_msg, UnbondResponse, Unbonding, WithdrawResponse,
-};
+
 use crate::state::{
     UnbondingIdsStore, UnbondingStore, CONFIG, CONTRACT_STATUS, PANIC_UNBONDS,
-    PANIC_UNBOND_REPLY_ID, PANIC_WITHDRAW_REPLY_ID, PENDING_UNBONDING, PREFIX_REVOKED_PERMITS,
-    RESPONSE_BLOCK_SIZE, UNBOND_REPLY_ID,
+    PANIC_UNBOND_REPLY_ID, PANIC_WITHDRAW_REPLY_ID, PENDING_UNBONDING, RESPONSE_BLOCK_SIZE,
+    UNBOND_REPLY_ID,
 };
 /// This contract implements SNIP-20 standard:
 /// https://github.com/SecretFoundation/SNIPs/blob/master/SNIP-20.md
@@ -26,26 +21,31 @@ use cosmwasm_std::{
     MessageInfo, QuerierWrapper, Reply, Response, StdError, StdResult, Storage, SubMsg,
     SubMsgResult, Uint128, Uint256,
 };
-use secret_toolkit::permit::{Permit, RevokedPermits, TokenPermissions};
-use secret_toolkit::snip20::burn_msg;
+
 #[allow(unused_imports)]
-use secret_toolkit::snip20::{
-    balance_query, mint_msg, register_receive_msg, send_msg, set_viewing_key_msg, token_info_query,
-    TokenInfo,
+use secret_toolkit::{
+    snip20::{
+        balance_query, mint_msg, register_receive_msg, send_msg, set_viewing_key_msg, token_info_query,
+        TokenInfo,burn_msg
+    },
+    utils::{pad_handle_result, pad_query_result}
 };
-use secret_toolkit::utils::{pad_handle_result, pad_query_result};
-use secret_toolkit::viewing_key::{ViewingKey, ViewingKeyStore};
+
 use secret_toolkit_crypto::{sha_256, Prng};
-#[allow(unused_imports)]
-use shade_protocol::admin::helpers::{validate_admin, AdminPermissions};
-#[allow(unused_imports)]
-use shade_protocol::admin::{ConfigResponse, QueryMsg as AdminQueryMsg};
-#[allow(unused_imports)]
-use shade_protocol::utils::Query;
-#[allow(unused_imports)]
-use shade_protocol::Contract;
+use serde::de::DeserializeOwned;
+use shade_protocol::query_auth::QueryPermit;
 
 use crate::msg::{Fee, FeeInfo};
+#[allow(unused_imports)]
+use shade_protocol::{
+    admin::{
+        helpers::{validate_admin, AdminPermissions},
+        ConfigResponse, QueryMsg as AdminQueryMsg,
+    },
+    query_auth::helpers::{authenticate_permit, authenticate_vk},
+    utils::Query,
+    Contract,
+};
 
 #[entry_point]
 pub fn instantiate(
@@ -72,8 +72,6 @@ pub fn instantiate(
             "Derivative and token contracts should have the same amount of decimals",
         ));
     }
-    let prng_seed_hashed = sha_256(&msg.prng_seed.0);
-    ViewingKey::set_seed(deps.storage, &sha_256(&prng_seed_hashed));
     // Generate viewing key for staking contract
     let entropy: String = msg
         .staking
@@ -179,15 +177,6 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
         ExecuteMsg::CompoundRewards {} => {
             try_compound_rewards(deps, ContractStatusLevel::NormalRun)
         }
-        ExecuteMsg::CreateViewingKey { entropy, .. } => {
-            try_create_key(deps, env, info, entropy, ContractStatusLevel::NormalRun)
-        }
-        ExecuteMsg::SetViewingKey { key, .. } => {
-            try_set_key(deps, info, key, ContractStatusLevel::NormalRun)
-        }
-        ExecuteMsg::RevokePermit { permit_name, .. } => {
-            revoke_permit(deps, info, permit_name, ContractStatusLevel::NormalRun)
-        }
     };
 
     pad_handle_result(response, RESPONSE_BLOCK_SIZE)
@@ -200,7 +189,7 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             QueryMsg::StakingInfo {} => query_staking_info(&deps, &env),
             QueryMsg::FeeInfo {} => query_fee_info(&deps),
             QueryMsg::ContractStatus {} => query_contract_status(deps.storage),
-            QueryMsg::WithPermit { permit, query } => permit_queries(deps, &env, permit, query),
+            QueryMsg::WithPermit { permit } => permit_queries(deps, &env, permit),
             _ => viewing_keys_queries(deps, &env, msg),
         },
         RESPONSE_BLOCK_SIZE,
@@ -1179,64 +1168,6 @@ fn generate_stake_msg(
     )
 }
 
-/// `try_set_key` sets the viewing key for the sender of the message
-///
-/// Arguments:
-///
-/// * `deps`: DepsMut - this is a struct that contains all the dependencies that the contract needs to
-/// run.
-/// * `info`: MessageInfo - contains the sender of the message, the sent amount, and the sent message
-/// * `key`: The viewing key to set.
-///
-/// Returns:
-///
-/// The viewing key is being returned.
-pub fn try_set_key(
-    deps: DepsMut,
-    info: MessageInfo,
-    key: String,
-    priority: ContractStatusLevel,
-) -> StdResult<Response> {
-    check_status(deps.storage, priority)?;
-    ViewingKey::set(deps.storage, info.sender.as_str(), key.as_str());
-    Ok(
-        Response::new().set_data(to_binary(&ExecuteAnswer::SetViewingKey {
-            status: Success,
-        })?),
-    )
-}
-
-/// It creates a new viewing key for the sender of the message
-///
-/// Arguments:
-///
-/// * `deps`: Dependencies of the module.
-/// * `env`: The environment of the transaction.
-/// * `info`: MessageInfo - contains the sender, the sent amount, and the sent message
-/// * `entropy`: A string of random characters that will be used to generate the private key.
-///
-/// Returns:
-///
-/// The viewing key is being returned.
-pub fn try_create_key(
-    deps: DepsMut,
-    env: Env,
-    info: MessageInfo,
-    entropy: String,
-    priority: ContractStatusLevel,
-) -> StdResult<Response> {
-    check_status(deps.storage, priority)?;
-    let key = ViewingKey::create(
-        deps.storage,
-        &info,
-        &env,
-        info.sender.as_str(),
-        entropy.as_ref(),
-    );
-
-    Ok(Response::new().set_data(to_binary(&ExecuteAnswer::CreateViewingKey { key })?))
-}
-
 /// It checks if the sender is an admin, and if so, it sets the contract status to the value passed in
 ///
 /// Arguments:
@@ -1270,36 +1201,6 @@ fn set_contract_status(
             status: Success,
         })?),
     )
-}
-
-/// It revokes a permit
-///
-/// Arguments:
-///
-/// * `deps`: DepsMut - This is the dependency object that contains all the dependencies that the
-/// contract needs to run.
-/// * `info`: MessageInfo - this is a struct that contains the sender, sent_at, and other information
-/// about the message.
-/// * `permit_name`: The name of the permit to revoke.
-///
-/// Returns:
-///
-/// The response is being set to the data of the ExecuteAnswer::RevokePermit { status: Success }
-fn revoke_permit(
-    deps: DepsMut,
-    info: MessageInfo,
-    permit_name: String,
-    priority: ContractStatusLevel,
-) -> StdResult<Response> {
-    check_status(deps.storage, priority)?;
-    RevokedPermits::revoke_permit(
-        deps.storage,
-        PREFIX_REVOKED_PERMITS,
-        info.sender.as_str(),
-        &permit_name,
-    );
-
-    Ok(Response::new().set_data(to_binary(&ExecuteAnswer::RevokePermit { status: Success })?))
 }
 
 // Copied from secret-toolkit-viewing-key-0.7.0
@@ -1350,60 +1251,83 @@ fn check_status(storage: &dyn Storage, priority: ContractStatusLevel) -> StdResu
 }
 /************ QUERIES ************/
 
-fn permit_queries(
-    deps: Deps,
-    env: &Env,
-    permit: Permit,
-    query: QueryWithPermit,
-) -> Result<Binary, StdError> {
+fn permit_queries(deps: Deps, env: &Env, permit: QueryPermit) -> Result<Binary, StdError> {
     // Validate permit content
-    let token_address = CONFIG.load(deps.storage)?.contract_address;
-
-    let account = secret_toolkit::permit::validate(
-        deps,
-        PREFIX_REVOKED_PERMITS,
-        &permit,
-        token_address.into_string(),
-        None,
-    )?;
+    let config = CONFIG.load(deps.storage)?;
+    let (addr, query) = validate_permit::<QueryWithPermit>(&deps.querier, &config, permit)?;
 
     // Permit validated! We can now execute the query.
     match query {
-        QueryWithPermit::Unbondings {} => {
-            if !permit.check_permission(&TokenPermissions::Balance) {
-                return Err(StdError::generic_err(format!(
-                    "No permission to query unbondings, got permissions {:?}",
-                    permit.params.permissions
-                )));
-            }
-            let addr = deps.api.addr_validate(&account)?;
-            query_unbondings(&deps, addr)
-        }
-        QueryWithPermit::Holdings {} => {
-            if !permit.check_permission(&TokenPermissions::Balance) {
-                return Err(StdError::generic_err(format!(
-                    "No permission to query holdings, got permissions {:?}",
-                    permit.params.permissions
-                )));
-            }
-            let addr = deps.api.addr_validate(&account)?;
-            query_holdings(&deps, env, addr)
-        }
+        QueryWithPermit::Unbondings {} => query_unbondings(&deps, addr),
+        QueryWithPermit::Holdings {} => query_holdings(&deps, env, addr),
+        #[allow(unreachable_patterns)]
+        _ => Err(StdError::generic_err("Invalid query message")),
     }
+}
+
+pub fn validate_permit<T: DeserializeOwned>(
+    querier: &QuerierWrapper,
+    config: &Config,
+    permit: QueryPermit,
+) -> StdResult<(Addr, T)> {
+    let authenticator = Contract {
+        address: config.query_auth.address.clone(),
+        code_hash: config.query_auth.code_hash.clone(),
+    };
+    let response = authenticate_permit::<T>(permit, querier, authenticator)?;
+
+    if response.revoked {
+        return Err(StdError::generic_err("Permit was revoked"));
+    }
+
+    Ok((response.sender, response.data))
+}
+#[cfg(not(test))]
+pub fn validate_viewing_key(
+    querier: &QuerierWrapper,
+    config: &Config,
+    address: Addr,
+    key: String,
+) -> StdResult<()> {
+    let authenticator = Contract {
+        address: config.query_auth.address.clone(),
+        code_hash: config.query_auth.code_hash.clone(),
+    };
+    let is_valid = authenticate_vk(address, key, querier, &authenticator)?;
+
+    if !is_valid {
+        return Err(StdError::generic_err("Invalid viewing key"));
+    }
+
+    Ok(())
+}
+#[cfg(test)]
+pub fn validate_viewing_key(
+    _querier: &QuerierWrapper,
+    _config: &Config,
+    _address: Addr,
+    key: String,
+) -> StdResult<()> {
+    if key != "password".to_string() {
+        return Err(StdError::generic_err("Invalid viewing key"));
+    }
+
+    Ok(())
 }
 
 pub fn viewing_keys_queries(deps: Deps, env: &Env, msg: QueryMsg) -> StdResult<Binary> {
     let (addresses, key) = msg.get_validation_params(deps.api)?;
-
+    let config = CONFIG.load(deps.storage)?;
     for address in addresses {
-        let result = ViewingKey::check(deps.storage, address.as_str(), key.as_str());
-        if result.is_ok() {
-            return match msg {
-                QueryMsg::Unbondings { address, .. } => query_unbondings(&deps, address),
-                QueryMsg::Holdings { address, .. } => query_holdings(&deps, env, address),
-                _ => panic!("This query type does not require authentication"),
-            };
-        }
+        validate_viewing_key(&deps.querier, &config, address, key)?;
+
+        return match msg {
+            QueryMsg::Unbondings { address, .. } => query_unbondings(&deps, address),
+            QueryMsg::Holdings { address, .. } => query_holdings(&deps, env, address),
+            _ => Err(StdError::generic_err(
+                "This query type does not require authentication",
+            )),
+        };
     }
 
     to_binary(&QueryAnswer::ViewingKeyError {
@@ -1570,11 +1494,10 @@ mod tests {
     use cosmwasm_std::{from_binary, OwnedDeps, QueryResponse};
     use shade_protocol::Contract;
 
-    use crate::msg::{ContractInfo as CustomContractInfo, Fee, FeeInfo, ResponseStatus};
+    use crate::msg::{ContractInfo as CustomContractInfo, Fee, FeeInfo};
 
     use super::*;
 
-    pub const VIEWING_KEY_SIZE: usize = 32;
     fn init_helper() -> (
         StdResult<Response>,
         OwnedDeps<MockStorage, MockApi, MockQuerier>,
@@ -1645,7 +1568,7 @@ mod tests {
 
     #[test]
     fn test_init_sanity() {
-        let (init_result, mut deps) = init_helper();
+        let (init_result, deps) = init_helper();
         let env = mock_env();
         let info = mock_info("instantiator", &[]);
         let prnd = Binary::from("lolz fun yay".as_bytes());
@@ -1725,14 +1648,6 @@ mod tests {
             CONTRACT_STATUS.load(&deps.storage).unwrap(),
             ContractStatusLevel::NormalRun
         );
-
-        ViewingKey::set(deps.as_mut().storage, "lebron", "lolz fun yay");
-        let is_vk_correct = ViewingKey::check(&deps.storage, "lebron", "lolz fun yay");
-        assert!(
-            is_vk_correct.is_ok(),
-            "Viewing key verification failed!: {}",
-            is_vk_correct.err().unwrap()
-        );
     }
 
     #[test]
@@ -1763,92 +1678,6 @@ mod tests {
             "handle() failed: {}",
             handle_result.err().unwrap()
         );
-    }
-
-    #[test]
-    fn test_handle_create_viewing_key() {
-        let (init_result, mut deps) = init_helper();
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        let handle_msg = ExecuteMsg::CreateViewingKey {
-            entropy: "".to_string(),
-            padding: None,
-        };
-        let info = mock_info("bob", &[]);
-
-        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
-
-        assert!(
-            handle_result.is_ok(),
-            "handle() failed: {}",
-            handle_result.err().unwrap()
-        );
-        let answer: ExecuteAnswer = from_binary(&handle_result.unwrap().data.unwrap()).unwrap();
-
-        let key = match answer {
-            ExecuteAnswer::CreateViewingKey { key } => key,
-            _ => panic!("NOPE"),
-        };
-        // let bob_canonical = deps.as_mut().api.addr_canonicalize("bob").unwrap();
-
-        let result = ViewingKey::check(&deps.storage, "bob", key.as_str());
-        assert!(result.is_ok());
-
-        // let saved_vk = read_viewing_key(&deps.storage, &bob_canonical).unwrap();
-        // assert!(key.check_viewing_key(saved_vk.as_slice()));
-    }
-
-    #[test]
-    fn test_handle_set_viewing_key() {
-        let (init_result, mut deps) = init_helper();
-        assert!(
-            init_result.is_ok(),
-            "Init failed: {}",
-            init_result.err().unwrap()
-        );
-
-        // Set VK
-        let handle_msg = ExecuteMsg::SetViewingKey {
-            key: "hi lol".to_string(),
-            padding: None,
-        };
-        let info = mock_info("bob", &[]);
-
-        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
-
-        let unwrapped_result: ExecuteAnswer =
-            from_binary(&handle_result.unwrap().data.unwrap()).unwrap();
-        assert_eq!(
-            to_binary(&unwrapped_result).unwrap(),
-            to_binary(&ExecuteAnswer::SetViewingKey {
-                status: ResponseStatus::Success
-            })
-            .unwrap(),
-        );
-
-        // Set valid VK
-        let actual_vk = "x".to_string().repeat(VIEWING_KEY_SIZE);
-        let handle_msg = ExecuteMsg::SetViewingKey {
-            key: actual_vk.clone(),
-            padding: None,
-        };
-        let info = mock_info("bob", &[]);
-
-        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
-
-        let unwrapped_result: ExecuteAnswer =
-            from_binary(&handle_result.unwrap().data.unwrap()).unwrap();
-        assert_eq!(
-            to_binary(&unwrapped_result).unwrap(),
-            to_binary(&ExecuteAnswer::SetViewingKey { status: Success }).unwrap(),
-        );
-
-        let result = ViewingKey::check(&deps.storage, "bob", actual_vk.as_str());
-        assert!(result.is_ok());
     }
 
     #[test]
@@ -1984,24 +1813,11 @@ mod tests {
 
     #[test]
     fn test_unbonding_query_not_unbonds() {
-        let (init_result, mut deps) = init_helper();
+        let (init_result, deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
-        );
-        // set viewing key
-        let info = mock_info("david", &[]);
-        let handle_msg = ExecuteMsg::SetViewingKey {
-            key: "password".to_string(),
-            padding: Some("asdnkshjfdhfdg5".to_string()),
-        };
-        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
-
-        assert!(
-            handle_result.is_ok(),
-            "handle() failed: {}",
-            handle_result.err().unwrap()
         );
         // Query unbondings
         let query_msg = QueryMsg::Unbondings {
@@ -2019,24 +1835,11 @@ mod tests {
 
     #[test]
     fn test_holdings_query_not_funds() {
-        let (init_result, mut deps) = init_helper();
+        let (init_result, deps) = init_helper();
         assert!(
             init_result.is_ok(),
             "Init failed: {}",
             init_result.err().unwrap()
-        );
-        // set viewing key
-        let info = mock_info("david", &[]);
-        let handle_msg = ExecuteMsg::SetViewingKey {
-            key: "password".to_string(),
-            padding: Some("asdnkshjfdhfdg5".to_string()),
-        };
-        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
-
-        assert!(
-            handle_result.is_ok(),
-            "handle() failed: {}",
-            handle_result.err().unwrap()
         );
         // Query unbondings
         let query_msg = QueryMsg::Holdings {

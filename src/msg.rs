@@ -3,8 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use cosmwasm_std::{Addr, Api, Binary, StdError, StdResult, Uint128, Uint256};
-use secret_toolkit::permit::Permit;
-use shade_protocol::Contract;
+use shade_protocol::{Contract, query_auth::QueryPermit};
 
 use crate::staking_interface::Unbonding;
 
@@ -88,18 +87,6 @@ pub enum ExecuteMsg {
         level: ContractStatusLevel,
         padding: Option<String>,
     },
-    CreateViewingKey {
-        entropy: String,
-        padding: Option<String>,
-    },
-    SetViewingKey {
-        key: String,
-        padding: Option<String>,
-    },
-    RevokePermit {
-        permit_name: String,
-        padding: Option<String>,
-    },
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
@@ -156,7 +143,7 @@ pub enum ReceiverMsg {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
-#[cfg_attr(test, derive(Eq, PartialEq))]
+#[cfg_attr(test, derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
     Holdings {
@@ -171,8 +158,7 @@ pub enum QueryMsg {
         viewing_key: String,
     },
     WithPermit {
-        permit: Permit,
-        query: QueryWithPermit,
+        permit: QueryPermit,
     },
 }
 

@@ -34,7 +34,7 @@ backtraces = ["cosmwasm-std/backtraces"]
 [dependencies]
 cosmwasm-std = { package = "secret-cosmwasm-std", version = "1.0.0", default-features = false }
 cosmwasm-storage = { package = "secret-cosmwasm-storage", version = "1.0.0" }
-shade-protocol = { git= "https://github.com/securesecrets/shade", features=["admin"], branch="basic-staking"}
+shade-protocol = { git= "https://github.com/securesecrets/shade", features=["admin", "query_auth"], branch="basic-staking"}
 secret-toolkit = { version = "0.7.0",  features = [
   "permit",
   "viewing-key",
