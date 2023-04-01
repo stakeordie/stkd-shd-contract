@@ -3,10 +3,11 @@
 This contract enables users to send SHD (or any SNIP-20) and receive a staking derivative token that can later be sent to the contract to unbond the sent amount's value in SHD (SNIP-20).
 
 ## Index
+#### [Engineering Design Diagram](#design)
 
-**[How to deploy](#deploy)**
+#### [How to deploy](#deploy)
 
-**[Instantiation message](#init)**
+#### [Instantiation message](#init)
 
 **Messages**
 
@@ -27,9 +28,16 @@ This contract enables users to send SHD (or any SNIP-20) and receive a staking d
 - [FeeInfo](#FeeInfo)
 - [ContractStatus](#ContractStatus)
 
+<a id="design"></a>
+
+## Engineering Design Diagram
+![Engineering Design Diagram](https://user-images.githubusercontent.com/81386118/229253357-ab76dc84-a298-424f-a87a-5624fb823602.png)
+
+
 <a id="deploy"></a>
 
 ## How to deploy
+
 
 ### Requirements
 
