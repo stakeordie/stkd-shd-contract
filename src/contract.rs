@@ -1,12 +1,14 @@
 use crate::msg::{
-    ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InstantiateMsg, QueryAnswer, QueryMsg,
-    ResponseStatus::Success,status_level_to_u8, Config, InProcessUnbonding, PanicUnbond, QueryWithPermit, ReceiverMsg,
+    status_level_to_u8, Config, ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InProcessUnbonding,
+    InstantiateMsg, PanicUnbond, QueryAnswer, QueryMsg, QueryWithPermit, ReceiverMsg,
+    ResponseStatus::Success,
 };
 
 #[allow(unused_imports)]
 use crate::staking_interface::{
-    balance_query as staking_balance_query, claim_rewards_msg, config_query, rewards_query, Action,
-    RawContract, StakingConfig,compound_msg, unbond_msg, withdraw_msg, UnbondResponse, Unbonding, WithdrawResponse,
+    balance_query as staking_balance_query, claim_rewards_msg, compound_msg, config_query,
+    rewards_query, unbond_msg, withdraw_msg, Action, RawContract, StakingConfig, UnbondResponse,
+    Unbonding, WithdrawResponse,
 };
 
 use crate::state::{
@@ -25,10 +27,10 @@ use cosmwasm_std::{
 #[allow(unused_imports)]
 use secret_toolkit::{
     snip20::{
-        balance_query, mint_msg, register_receive_msg, send_msg, set_viewing_key_msg, token_info_query,
-        TokenInfo,burn_msg
+        balance_query, burn_msg, mint_msg, register_receive_msg, send_msg, set_viewing_key_msg,
+        token_info_query, TokenInfo,
     },
-    utils::{pad_handle_result, pad_query_result}
+    utils::{pad_handle_result, pad_query_result},
 };
 
 use secret_toolkit_crypto::{sha_256, Prng};
@@ -202,11 +204,12 @@ pub fn reply(deps: DepsMut, _env: Env, msg: Reply) -> StdResult<Response> {
         (UNBOND_REPLY_ID, SubMsgResult::Ok(s)) => match s.data {
             Some(x) => {
                 let result: UnbondResponse = from_binary(&x)?;
-                // Read unbonding info
+                // Unbonding stored in try_unbond function
+                // Because of here you can't access the sender of the TX this was stored previously
                 let pending_unbonding = PENDING_UNBONDING.may_load(deps.storage)?;
 
                 if let Some(unbonding_processing) = pending_unbonding {
-                    // Store unbonding
+                    // Set properly id for this unbonding
                     let unbond = Unbonding {
                         id: result.unbond.id,
                         amount: unbonding_processing.amount,
@@ -769,6 +772,10 @@ fn try_unbond(
         )));
     }
 
+    // Store unbonding temporarily
+    // This unbonding is used in unbond sub-message reply handler
+    // Due to that in reply handler you can't access sender information
+    // and this is required to store user's unbondings
     let unbonding = InProcessUnbonding {
         id: Uint128::zero(),
         amount: shd_to_be_received,
