@@ -61,12 +61,14 @@ pub fn instantiate(
         RESPONSE_BLOCK_SIZE,
         msg.token.code_hash.clone(),
         msg.token.address.to_string(),
+        false,
     )?;
     let derivative_info = get_token_info(
         deps.querier,
         RESPONSE_BLOCK_SIZE,
         msg.derivative.code_hash.clone(),
         msg.derivative.address.to_string(),
+        true,
     )?;
 
     if token_info.decimals != derivative_info.decimals {
@@ -644,6 +646,7 @@ fn try_stake(
         RESPONSE_BLOCK_SIZE,
         config.derivative.code_hash.clone(),
         config.derivative.address.to_string(),
+        true,
     )?;
     let total_supply = token_info.total_supply.unwrap_or(Uint128::zero());
     // mint appropriate amount
@@ -734,6 +737,7 @@ fn try_unbond(
         RESPONSE_BLOCK_SIZE,
         config.derivative.code_hash.clone(),
         config.derivative.address.to_string(),
+        true,
     )?;
     let staking_info = get_staking_contract_config(deps.querier, &config)?;
     let amount = Uint128::try_from(amt)?;
@@ -1078,9 +1082,10 @@ fn get_token_info<C: CustomQuery>(
     block_size: usize,
     callback_code_hash: String,
     contract_addr: String,
+    check_public_supply: bool,
 ) -> StdResult<TokenInfo> {
     let token_info = token_info_query(querier, block_size, callback_code_hash, contract_addr)?;
-    if token_info.total_supply.is_none() {
+    if check_public_supply && token_info.total_supply.is_none() {
         return Err(StdError::generic_err(
             "Token supply must be public on derivative token",
         ));
@@ -1095,6 +1100,7 @@ fn get_token_info<C: CustomQuery>(
     _block_size: usize,
     _callback_code_hash: String,
     _contract_addr: String,
+    _check_public_supply: bool,
 ) -> StdResult<TokenInfo> {
     Ok(TokenInfo {
         name: String::from("STKD-SHD"),
@@ -1444,6 +1450,7 @@ fn query_staking_info(deps: &Deps, env: &Env) -> StdResult<Binary> {
         RESPONSE_BLOCK_SIZE,
         config.derivative.code_hash.clone(),
         config.derivative.address.to_string(),
+        true
     )?;
     let bonded = get_staked_shd(deps.querier, &env.contract.address, &config)?;
     let rewards = get_rewards(deps.querier, &env.contract.address, &config)?;
