@@ -64,6 +64,15 @@ impl StakingMsg {
     }
 }
 
+pub fn transfer_staked_msg(
+    callback_code_hash: String,
+    contract_addr: String,
+    amount: Uint128,
+    recipient: String,
+    compound: Option<bool>,
+) -> StdResult<CosmosMsg> {
+    StakingMsg::TransferStake { amount, recipient, compound }.to_cosmos_msg(callback_code_hash, contract_addr)
+}
 /// Returns a StdResult<CosmosMsg> used to execute Claim
 /// Claims all rewards generated on the Staking Contract
 /// # Arguments
