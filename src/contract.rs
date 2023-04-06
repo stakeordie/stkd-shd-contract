@@ -1,7 +1,10 @@
-use crate::msg::{
-    status_level_to_u8, Config, ContractStatusLevel, ExecuteAnswer, ExecuteMsg, InProcessUnbonding,
-    InstantiateMsg, PanicUnbond, QueryAnswer, QueryMsg, QueryWithPermit, ReceiverMsg,
-    ResponseStatus::Success,
+use crate::{
+    msg::{
+        status_level_to_u8, Config, ContractStatusLevel, ExecuteAnswer, ExecuteMsg,
+        InProcessUnbonding, InstantiateMsg, PanicUnbond, QueryAnswer, QueryMsg, QueryWithPermit,
+        ReceiverMsg, ResponseStatus::Success,
+    },
+    staking_interface::transfer_staked_msg,
 };
 
 #[allow(unused_imports)]
@@ -589,11 +592,21 @@ fn receive(
                 amount,
                 ContractStatusLevel::NormalRun,
             ),
+            ReceiverMsg::TransferStaked { receiver } => try_transfer_staked(
+                deps,
+                env,
+                info,
+                from,
+                amount,
+                receiver,
+                ContractStatusLevel::NormalRun,
+            ),
             #[allow(unreachable_patterns)]
             _ => Err(StdError::generic_err(format!(
-                "Invalid msg provided, expected {} or {}",
+                "Invalid msg provided, expected {} , {} or {}",
                 to_binary(&ReceiverMsg::Stake {})?,
-                to_binary(&ReceiverMsg::Unbond {})?
+                to_binary(&ReceiverMsg::Unbond {})?,
+                to_binary(&ReceiverMsg::TransferStaked { receiver: None })?
             ))),
         }
     } else {
@@ -704,6 +717,111 @@ fn try_stake(
             tokens_returned: mint,
         })?)
         .add_messages(messages))
+}
+
+fn try_transfer_staked(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    from: Addr,
+    amt: Uint256,
+    receiver: Option<Addr>,
+    priority: ContractStatusLevel,
+) -> StdResult<Response> {
+    check_status(deps.storage, priority)?;
+    let config = CONFIG.load(deps.storage)?;
+    let amount = Uint128::try_from(amt)?;
+
+    let derivative_token_info = get_token_info(
+        deps.querier,
+        RESPONSE_BLOCK_SIZE,
+        config.derivative.code_hash.clone(),
+        config.derivative.address.to_string(),
+        true,
+    )?;
+
+    if info.sender != config.derivative.address {
+        return Err(StdError::generic_err(
+            "Sender is not derivative (SNIP20) contract",
+        ));
+    }
+
+    if amount == Uint128::zero() {
+        return Err(StdError::generic_err("0 amount sent to unbond"));
+    }
+
+    let (_, rewards, delegatable) = get_delegatable(deps.querier, &env.contract.address, &config)?;
+    let staked = get_staked_shd(deps.querier, &env.contract.address, &config)?;
+    let pool = delegatable + staked;
+    // unwrap is ok because multiplying 2 u128 ints can not overflow a u256
+    let number = Uint256::from(amount)
+        .checked_mul(Uint256::from(pool))
+        .unwrap();
+    // unwrap is ok because derivative token supply could not have been 0 if we were able
+    // to burn
+    let unbond_amount = Uint128::try_from(
+        number
+            .checked_div(Uint256::from(derivative_token_info.total_supply.unwrap()))
+            .unwrap(),
+    )?;
+    // calculate the amount going to the user and fee's collector
+    let (fee, deposit) = get_fee(unbond_amount, &config.fees.unbonding)?;
+
+    if deposit.is_zero() {
+        return Err(StdError::generic_err(format!(
+            "Redeeming {} derivative tokens would be worth less than 1 SHD",
+            amount
+        )));
+    }
+    let recipient: String = receiver.unwrap_or(from).to_string();
+    Ok(Response::default()
+        .add_messages([
+            // Claim rewards
+            claim_rewards_msg(
+                config.staking.code_hash.clone(),
+                config.staking.address.to_string(),
+            )?,
+            // Re-stake rewards
+            generate_stake_msg(Uint128::from(rewards).saturating_sub(fee), Some(true), &config)?,
+            // Burn derivatives sent
+            burn_msg(
+                amount,
+                Some(format!(
+                    "Burn {} derivatives to receive {} SHD",
+                    amount, deposit
+                )),
+                config.derivative.entropy,
+                RESPONSE_BLOCK_SIZE,
+                config.derivative.code_hash.clone(),
+                config.derivative.address.to_string(),
+            )?,
+            //Sends fee collector
+            send_msg(
+                config.fees.unbonding.collector.to_string(),
+                fee,
+                None,
+                Some(format!(
+                    "Payment of fee for transfer staked SHD using contract {}",
+                    env.contract.address
+                )),
+                config.token.entropy.clone(),
+                RESPONSE_BLOCK_SIZE,
+                config.token.code_hash.clone(),
+                config.token.address.to_string(),
+            )?,
+            // Transfer staked
+            transfer_staked_msg(
+                config.staking.code_hash,
+                config.staking.address.to_string(),
+                deposit,
+                recipient,
+                Some(true),
+            )?,
+        ])
+        .set_data(to_binary(&ExecuteAnswer::TransferStaked {
+            tokens_returned: deposit,
+            amount_sent: amount,
+        })?))
 }
 
 /// `try_unbond` is called when a user sends a derivative token to the contract. The contract then
@@ -1450,7 +1568,7 @@ fn query_staking_info(deps: &Deps, env: &Env) -> StdResult<Binary> {
         RESPONSE_BLOCK_SIZE,
         config.derivative.code_hash.clone(),
         config.derivative.address.to_string(),
-        true
+        true,
     )?;
     let bonded = get_staked_shd(deps.querier, &env.contract.address, &config)?;
     let rewards = get_rewards(deps.querier, &env.contract.address, &config)?;
@@ -1825,6 +1943,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_receive_transfer_staked_msg_successfully() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::Receive {
+            sender: Addr::unchecked(""),
+            from: Addr::unchecked(""),
+            amount: Uint256::from(100000000 as u32),
+            msg: Some(to_binary(&ReceiverMsg::TransferStaked { receiver: None }).unwrap()),
+        };
+        let info = mock_info("derivative_snip20_info_address", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(
+            handle_result.is_ok(),
+            "handle() failed: {}",
+            handle_result.err().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_receive_transfer_staked_msg_sender_is_not_derivative_contract() {
+        let (init_result, mut deps) = init_helper();
+        assert!(
+            init_result.is_ok(),
+            "Init failed: {}",
+            init_result.err().unwrap()
+        );
+
+        let handle_msg = ExecuteMsg::Receive {
+            sender: Addr::unchecked(""),
+            from: Addr::unchecked(""),
+            amount: Uint256::from(100000000 as u32),
+            msg: Some(to_binary(&ReceiverMsg::TransferStaked { receiver: None }).unwrap()),
+        };
+        let info = mock_info("giannis", &[]);
+
+        let handle_result = execute(deps.as_mut(), mock_env(), info, handle_msg);
+
+        assert!(handle_result.is_err());
+        let error = extract_error_msg(handle_result);
+
+        assert_eq!(error, "Sender is not derivative (SNIP20) contract");
+    }
     #[test]
     fn test_unbonding_query_not_unbonds() {
         let (init_result, deps) = init_helper();

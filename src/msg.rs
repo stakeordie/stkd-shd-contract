@@ -92,6 +92,10 @@ pub enum ExecuteMsg {
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteAnswer {
+    TransferStaked {
+        amount_sent: Uint128,
+        tokens_returned: Uint128
+    },
     Claim {
         amount_claimed: Uint128,
     },
@@ -140,6 +144,9 @@ pub enum ExecuteAnswer {
 pub enum ReceiverMsg {
     Stake {},
     Unbond {},
+    TransferStaked {
+        receiver: Option<Addr>
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
