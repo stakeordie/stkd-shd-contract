@@ -71,7 +71,12 @@ pub fn transfer_staked_msg(
     recipient: String,
     compound: Option<bool>,
 ) -> StdResult<CosmosMsg> {
-    StakingMsg::TransferStake { amount, recipient, compound }.to_cosmos_msg(callback_code_hash, contract_addr)
+    StakingMsg::TransferStake {
+        amount,
+        recipient,
+        compound,
+    }
+    .to_cosmos_msg(callback_code_hash, contract_addr)
 }
 /// Returns a StdResult<CosmosMsg> used to execute Claim
 /// Claims all rewards generated on the Staking Contract
@@ -217,11 +222,17 @@ pub struct Unbonding {
     pub amount: Uint128,
     pub complete: Uint128,
 }
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct RewardToken {
+    pub address: Addr,
+    pub code_hash: String,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct Reward {
-    pub token: Addr,
+    pub token: RewardToken,
     pub amount: Uint128,
 }
 

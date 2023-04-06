@@ -4,7 +4,7 @@ use crate::{
         InProcessUnbonding, InstantiateMsg, PanicUnbond, QueryAnswer, QueryMsg, QueryWithPermit,
         ReceiverMsg, ResponseStatus::Success,
     },
-    staking_interface::transfer_staked_msg,
+    staking_interface::{transfer_staked_msg, Reward, Rewards},
 };
 
 #[allow(unused_imports)]
@@ -166,11 +166,16 @@ pub fn execute(deps: DepsMut, env: Env, info: MessageInfo, msg: ExecuteMsg) -> S
         ExecuteMsg::PanicWithdraw {} => {
             try_panic_withdraw(deps, env, info, ContractStatusLevel::Panicked)
         }
-        ExecuteMsg::UpdateFees { staking, unbonding } => update_fees(
+        ExecuteMsg::UpdateFees {
+            staking,
+            unbonding,
+            collector,
+        } => update_fees(
             deps,
             info,
             staking,
             unbonding,
+            collector,
             ContractStatusLevel::Panicked,
         ),
 
@@ -310,7 +315,7 @@ fn try_claim(
     let sender = info.sender;
     let time = Uint128::from(env.block.time.seconds());
     let user_unbondings_ids = UnbondingIdsStore::load(deps.storage, &sender);
-
+    let config = CONFIG.load(deps.storage)?;
     let mut to_claim_ids: Vec<u128> = vec![];
     let mut amount_claimed = Uint128::zero();
 
@@ -330,6 +335,7 @@ fn try_claim(
     if to_claim_ids.is_empty() {
         return Err(StdError::generic_err("No mature unbondings to claim"));
     }
+    let (fee, deposit) = get_fee(amount_claimed, &config.fees.unbonding)?;
 
     let users_new_pending_unbondings: Vec<u128> = user_unbondings_ids
         .into_iter()
@@ -347,10 +353,20 @@ fn try_claim(
             Some(to_claim_ids_uint128),
         )?,
         send_msg(
-            sender.to_string(),
-            amount_claimed,
+            config.fees.collector.to_string(),
+            fee,
             None,
-            Some(format!("Claiming {} SHD tokens", { amount_claimed })),
+            Some("Payment of fee for unbonding SHD".to_string()),
+            config.token.entropy.clone(),
+            RESPONSE_BLOCK_SIZE,
+            config.token.code_hash.clone(),
+            config.token.address.to_string(),
+        )?,
+        send_msg(
+            sender.to_string(),
+            deposit,
+            None,
+            Some(format!("Claiming {} SHD tokens", { deposit })),
             config.token.entropy,
             RESPONSE_BLOCK_SIZE,
             config.token.code_hash,
@@ -360,7 +376,9 @@ fn try_claim(
 
     Ok(Response::default()
         .add_messages(messages)
-        .set_data(to_binary(&ExecuteAnswer::Claim { amount_claimed })?))
+        .set_data(to_binary(&ExecuteAnswer::Claim {
+            amount_claimed: deposit,
+        })?))
 }
 
 /// It creates a `compound_msg` and returns it as a `Response`
@@ -376,12 +394,39 @@ fn try_claim(
 fn try_compound_rewards(deps: DepsMut, priority: ContractStatusLevel) -> StdResult<Response> {
     check_status(deps.storage, priority)?;
     let config = CONFIG.load(deps.storage)?;
+    let staked = get_staked_shd(deps.querier, &config.contract_address, &config)?;
+    let rewards = query_rewards(deps.querier, &config.contract_address, &config)?;
 
-    let msgs = vec![compound_msg(
-        config.staking.code_hash,
-        config.staking.address.to_string(),
-    )?];
-    Ok(Response::default().add_messages(msgs))
+    let rewards: Vec<Reward> = rewards
+        .rewards
+        .into_iter()
+        .filter(|r| r.token.address != config.token.address)
+        .collect();
+
+    let mut messages: Vec<CosmosMsg> = vec![];
+    if staked > 0 {
+        messages.push(compound_msg(
+            config.staking.code_hash,
+            config.staking.address.to_string(),
+        )?);
+    }
+
+    for r in rewards.into_iter() {
+        if r.amount > Uint128::zero() {
+            messages.push(send_msg(
+                config.fees.collector.to_string(),
+                r.amount,
+                None,
+                Some("Sending rewards to ShadeDAO".to_string()),
+                None,
+                RESPONSE_BLOCK_SIZE,
+                r.token.code_hash.clone(),
+                r.token.address.to_string(),
+            )?);
+        }
+    }
+
+    Ok(Response::default().add_messages(messages))
 }
 
 /// It checks if the sender is an admin, and if so, it sends a message to the staking contract to unbond
@@ -527,6 +572,7 @@ fn update_fees(
     info: MessageInfo,
     staking: Option<Fee>,
     unbonding: Option<Fee>,
+    collector: Option<Addr>,
     priority: ContractStatusLevel,
 ) -> StdResult<Response> {
     check_status(deps.storage, priority)?;
@@ -540,6 +586,7 @@ fn update_fees(
     let fees: FeeInfo = FeeInfo {
         staking: staking.unwrap_or(config.fees.staking),
         unbonding: unbonding.unwrap_or(config.fees.unbonding),
+        collector: collector.unwrap_or(config.fees.collector),
     };
     config.fees = fees.clone();
     CONFIG.save(deps.storage, &config)?;
@@ -692,7 +739,7 @@ fn try_stake(
 
     // send fee to collector
     messages.push(send_msg(
-        config.fees.staking.collector.to_string(),
+        config.fees.collector.to_string(),
         fee,
         None,
         Some(format!(
@@ -782,7 +829,11 @@ fn try_transfer_staked(
                 config.staking.address.to_string(),
             )?,
             // Re-stake rewards
-            generate_stake_msg(Uint128::from(rewards).saturating_sub(fee), Some(true), &config)?,
+            generate_stake_msg(
+                Uint128::from(rewards).saturating_sub(fee),
+                Some(true),
+                &config,
+            )?,
             // Burn derivatives sent
             burn_msg(
                 amount,
@@ -797,7 +848,7 @@ fn try_transfer_staked(
             )?,
             //Sends fee collector
             send_msg(
-                config.fees.unbonding.collector.to_string(),
+                config.fees.collector.to_string(),
                 fee,
                 None,
                 Some(format!(
@@ -1029,17 +1080,11 @@ fn get_rewards<C: CustomQuery>(
     contract_addr: &Addr,
     config: &Config,
 ) -> StdResult<u128> {
-    let rewards = rewards_query(
-        contract_addr.to_string(),
-        config.staking_contract_vk.clone(),
-        querier,
-        config.staking.code_hash.to_string(),
-        config.staking.address.to_string(),
-    )?;
+    let rewards = query_rewards(querier, contract_addr, config)?;
     let item = rewards
         .rewards
         .iter()
-        .find(|r| r.token == config.token.address);
+        .find(|r| r.token.address == config.token.address);
 
     if let Some(reward) = item {
         Ok(reward.amount.u128())
@@ -1052,6 +1097,30 @@ fn get_rewards<C: CustomQuery>(
 // Allow warn code because mock queries make warnings to show up
 fn get_rewards<C: CustomQuery>(_: QuerierWrapper<C>, _: &Addr, _: &Config) -> StdResult<u128> {
     Ok(100000000)
+}
+
+#[cfg(not(test))]
+#[allow(dead_code)]
+// Allow warn code because mock queries make warnings to show up
+fn query_rewards<C: CustomQuery>(
+    querier: QuerierWrapper<C>,
+    contract_addr: &Addr,
+    config: &Config,
+) -> StdResult<Rewards> {
+    rewards_query(
+        contract_addr.to_string(),
+        config.staking_contract_vk.clone(),
+        querier,
+        config.staking.code_hash.to_string(),
+        config.staking.address.to_string(),
+    )
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+// Allow warn code because mock queries make warnings to show up
+fn query_rewards<C: CustomQuery>(_: QuerierWrapper<C>, _: &Addr, _: &Config) -> StdResult<Rewards> {
+    Ok(Rewards { rewards: vec![] })
 }
 
 #[cfg(test)]
@@ -1615,6 +1684,7 @@ fn query_fee_info(deps: &Deps) -> StdResult<Binary> {
     to_binary(&QueryAnswer::FeeInfo {
         staking: config.fees.staking,
         unbonding: config.fees.unbonding,
+        collector: config.fees.collector,
     })
 }
 
@@ -1666,15 +1736,14 @@ mod tests {
             },
             fees: FeeInfo {
                 staking: Fee {
-                    collector: Addr::unchecked("collector_address"),
                     rate: 5,
                     decimal_places: 2_u8,
                 },
                 unbonding: Fee {
-                    collector: Addr::unchecked("collector_address"),
                     rate: 5,
                     decimal_places: 2_u8,
                 },
+                collector: Addr::unchecked("collector_address"),
             },
         };
 
@@ -2095,6 +2164,7 @@ mod tests {
         let handle_msg = ExecuteMsg::UpdateFees {
             staking: None,
             unbonding: None,
+            collector: None,
         };
         let info = mock_info("not_admin", &[]);
 
@@ -2121,6 +2191,7 @@ mod tests {
         let handle_msg = ExecuteMsg::UpdateFees {
             staking: None,
             unbonding: None,
+            collector: None,
         };
         let info = mock_info("admin", &[]);
 
@@ -2147,10 +2218,10 @@ mod tests {
         let config_before_tx = CONFIG.load(&deps.storage).unwrap();
         let handle_msg = ExecuteMsg::UpdateFees {
             staking: Some(Fee {
-                collector: Addr::unchecked("new_collector"),
                 rate: 5_u32,
                 decimal_places: 2_u8,
             }),
+            collector: Some(Addr::unchecked("new_collector")),
             unbonding: None,
         };
         let info = mock_info("admin", &[]);
@@ -2266,15 +2337,18 @@ mod tests {
         );
         let query_msg = QueryMsg::FeeInfo {};
         let query_result = query(deps.as_ref(), mock_env(), query_msg);
-        let (staking, unbonding) = match from_binary(&query_result.unwrap()).unwrap() {
-            QueryAnswer::FeeInfo { staking, unbonding } => (staking, unbonding),
+        let (staking, unbonding, collector) = match from_binary(&query_result.unwrap()).unwrap() {
+            QueryAnswer::FeeInfo {
+                staking,
+                unbonding,
+                collector,
+            } => (staking, unbonding, collector),
             other => panic!("Unexpected: {:?}", other),
         };
 
         assert_eq!(
             staking,
             Fee {
-                collector: Addr::unchecked("collector_address"),
                 rate: 5,
                 decimal_places: 2_u8,
             }
@@ -2282,11 +2356,12 @@ mod tests {
         assert_eq!(
             unbonding,
             Fee {
-                collector: Addr::unchecked("collector_address"),
                 rate: 5,
                 decimal_places: 2_u8,
             }
         );
+
+        assert_eq!(collector, Addr::unchecked("collector_address"));
     }
     #[test]
     fn test_handle_claim_not_mature_unbonds() {
