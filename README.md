@@ -43,7 +43,8 @@ This contract enables users to send SHD (or any SNIP-20) and receive a staking d
 ### Requirements
 
 - [SecretCLI installed and configured](https://docs.scrt.network/secret-network-documentation/development/tools-and-libraries/secret-cli)
-- Account with funds (~2 scrt)
+- Account with funds (~6 scrt)
+- Derivative (SNIP-20) deployed
 
 #### Steps
 
@@ -76,7 +77,17 @@ TX_HASH=$(secretcli tx compute instantiate ${CODE_ID} '<INIT_MSG>' --from <ACCOU
 7. Query contract's address
 
 ```shell
-secretcli q compute tx ${TX_HASH} | jq '.output_logs[0].attributes[0].value' | sed 's/^"\|"$//g'
+ADDRESS=$(secretcli q compute tx ${TX_HASH} | jq '.output_logs[0].attributes[0].value' | sed 's/^"\|"$//g')
+```
+
+8. Set staking derivative as minter of derivative
+```shell
+secretcli tx compute execute <DERIVATIVE_ADDR> '{"set_minters':{"minters":["'${ADDRESS}'"]}}' --from <ACCOUNT_NAME> -y | jq
+```
+
+9. Whitelist staking derivative in staking contract
+```
+secretcli tx compute execute <STAKING_ADDR> '{"add_transfer_whitelist":{"user":"'${ADDRESS}'"}}'
 ```
 
 #### Troubleshooting
