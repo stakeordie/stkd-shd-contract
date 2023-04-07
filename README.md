@@ -3,6 +3,7 @@
 This contract enables users to send SHD (or any SNIP-20) and receive a staking derivative token that can later be sent to the contract to unbond the sent amount's value in SHD (SNIP-20).
 
 ## Index
+
 #### [Engineering Design Diagram](#design)
 
 #### [How to deploy](#deploy)
@@ -13,6 +14,7 @@ This contract enables users to send SHD (or any SNIP-20) and receive a staking d
 
 - [Stake](#Stake)
 - [Unbond](#Unbond)
+- [TransferStaked](#TransferStaked)
 - [Claim](#Claim)
 - [CompoundRewards](#CompoundRewards)
 - [UpdateFees](#UpdateFees)
@@ -31,13 +33,12 @@ This contract enables users to send SHD (or any SNIP-20) and receive a staking d
 <a id="design"></a>
 
 ## Engineering Design Diagram
-![Engineering Design Diagram](https://user-images.githubusercontent.com/81386118/229253357-ab76dc84-a298-424f-a87a-5624fb823602.png)
 
+![Engineering Design Diagram](./.images/engineering-diagram.png)
 
 <a id="deploy"></a>
 
 ## How to deploy
-
 
 ### Requirements
 
@@ -53,20 +54,27 @@ This contract enables users to send SHD (or any SNIP-20) and receive a staking d
 ```shell
 make compile-optimized-reproducible
 ```
+
 4. Store contract on chain.
+
 ```shell
 secretcli tx compute store contract.wasm.gz --from <ACCOUNT_NAME> -y --gas 3000000 | jq
 ```
+
 5. Query contract code id
+
 ```shell
 CODE_ID=$(secretcli q compute list-code | jq '.[-1].code_id')
 ```
+
 6. Instantiate a new contract
+
 ```shell
 TX_HASH=$(secretcli tx compute instantiate ${CODE_ID} '<INIT_MSG>' --from <ACCOUNT_NAME> -y --gas 3000000 --label $(openssl rand -base64 12 | tr -d /=+ | cut -c -16) | jq '.txhash' | sed 's/^"\|"$//g')
 ```
 
 7. Query contract's address
+
 ```shell
 secretcli q compute tx ${TX_HASH} | jq '.output_logs[0].attributes[0].value' | sed 's/^"\|"$//g'
 ```
@@ -74,6 +82,7 @@ secretcli q compute tx ${TX_HASH} | jq '.output_logs[0].attributes[0].value' | s
 #### Troubleshooting
 
 - Query transaction's status
+
 ```shell
 secretcli q compute tx <TX_HASH> | jq
 ```
@@ -278,11 +287,73 @@ interface UnbondMsgResponse {
 
 **Errors**
 
-| Message                                                    | Cause                                                                       | How to solve it                                   |
-| ---------------------------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------- |
-| Sender is not derivative (SNIP20) contract                 | The token sent is not the same as indicated at contract's instantiation     | Send the appropiate tokens                        |
-| 0 amount sent to unbond                                    | You send 0 tokens to the contract (if that's possible)                      | Send more than 0                                  |
-| Redeeming derivative tokens would be worth less than 1 SHD | The price is high causing that the amount sent is not enought to buy 1 SHD. | Send more derivatives to the contract than before |
+| Message                                                    | Cause                                                                      | How to solve it                                   |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------- |
+| Sender is not derivative (SNIP20) contract                 | The token sent is not the same as indicated at contract's instantiation    | Send the appropriate tokens                       |
+| 0 amount sent to unbond                                    | You send 0 tokens to the contract (if that's possible)                     | Send more than 0                                  |
+| Redeeming derivative tokens would be worth less than 1 SHD | The price is high causing that the amount sent is not enough to buy 1 SHD. | Send more derivatives to the contract than before |
+
+### TransferStaked
+
+Calculates the equivalent amount of SHD per derivative sent. Then sends this SHD as staked position to the sender.
+Triggered by Receiver interface when sending derivative tokens.
+
+🌐 Anyone can use this feature.
+
+**Request**
+
+```typescript
+interface ExecuteSendMsg {
+  recipient: string;
+  amount: string;
+  msg: string; // '{"transfer_staked":{"receiver":"opt_receiver_address"}}' Base64 encoded
+  padding?: string;
+}
+
+interface ExecuteUnbondMsg {
+  send: ExecuteSendMsg;
+}
+```
+
+```json
+{
+  "send": {
+    "recipient": "secret1b1b1b1bb1b1b1b1b1b1",
+    "amount": "100000000",
+    "msg": "eyJ0cmFuc2Zlcl9zdGFrZWQiOnsicmVjZWl2ZXIiOiJzZWNyZXQxcjZ5OXBxdXkwc3l4a2tndXJodXBnN2tzY3NuMDd6Mmo3ZGo3NyJ9fQ==",
+    "padding": "random string"
+  }
+}
+```
+
+**Response**
+
+```typescript
+interface TransferStakedResponse {
+  tokens_returned: string;
+  amount_sent: string;
+}
+interface TransferStakedMsgResponse {
+  transfer_staked: TransferStakedResponse;
+}
+```
+
+```json
+{
+  "transfer_staked": {
+    "amount_sent": "50000000",
+    "tokens_returned": "50000000"
+  }
+}
+```
+
+**Errors**
+
+| Message                                                    | Cause                                                                      | How to solve it                                   |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------- |
+| Sender is not derivative (SNIP20) contract                 | The token sent is not the same as indicated at contract's instantiation    | Send the appropriate tokens                       |
+| 0 amount sent to unbond                                    | You send 0 tokens to the contract (if that's possible)                     | Send more than 0                                  |
+| Redeeming derivative tokens would be worth less than 1 SHD | The price is high causing that the amount sent is not enough to buy 1 SHD. | Send more derivatives to the contract than before |
 
 ### Claim
 
@@ -330,7 +401,7 @@ interface ClaimMsgResponse {
 
 ### CompoundRewards
 
-Claims rewards generated and re-stake them.
+Claims SHD rewards generated and re-stake them. Claims non-SHD rewards and sends them to fee's collector.
 
 🌐 Anyone can use this feature.
 
@@ -382,7 +453,6 @@ Updates fee's collector, percentage or decimal places.
 
 ```typescript
 interface Fee {
-  collector: string;
   rate: number;
   decimal_places: number;
 }
@@ -390,6 +460,7 @@ interface Fee {
 interface UpdateFeesMsg {
   staking?: Fee;
   unbonding?: Fee;
+  collector?: string;
 }
 
 interface ExecuteUpdateFeesMsg {
@@ -400,13 +471,12 @@ interface ExecuteUpdateFeesMsg {
 ```json
 {
   "update_fees": {
+    "collector": "secretb1b1b1b1b1b1b1b1b1b1b1b1",
     "staking": {
-      "collector": "secretb1b1b1b1b1b1b1b1b1b1b1b1",
       "rate": 50000,
       "decimal_places": 5
     },
     "unbonding": {
-      "collector": "secretb1b1b1b1b1b1b1b1b1b1b1b1",
       "rate": 50000,
       "decimal_places": 5
     }
@@ -420,7 +490,6 @@ interface ExecuteUpdateFeesMsg {
 import ResponseStatus from "shade-protocol";
 
 interface Fee {
-  collector: string;
   rate: number;
   decimal_places: number;
 }
@@ -428,6 +497,7 @@ interface Fee {
 interface FeeInfo {
   staking: Fee;
   unbonding: Fee;
+  collector: string;
 }
 
 interface UpdateFeesMsgResponse {
@@ -443,13 +513,12 @@ interface UpdateFeesMsgResponse {
   "update_fees": {
     "status": "success",
     "fee": {
+      "collector": "secretb1b1b1b1b1b1b1b1b1b1b1b1",
       "staking": {
-        "collector": "secretb1b1b1b1b1b1b1b1b1b1b1b1",
         "rate": 50000,
         "decimal_places": 5
       },
       "unbonding": {
-        "collector": "secretb1b1b1b1b1b1b1b1b1b1b1b1",
         "rate": 50000,
         "decimal_places": 5
       }
@@ -750,13 +819,13 @@ interface FeeInfoQuery {
 
 ```typescript
 interface Fee {
-  collector: string;
   rate: number;
   decimal_places: number;
 }
 
 interface FeeInfoQueryResponse {
   fee_info: {
+    collector: string;
     staking: Fee;
     unbonding: Fee;
   };
@@ -766,13 +835,12 @@ interface FeeInfoQueryResponse {
 ```json
 {
   "fee_info": {
+    "collector": "secret1b1b1b1b1b1b1b1b1",
     "staking": {
-      "collector": "secret1b1b1b1b1b1b1b1b1",
       "rate": 100,
       "decimal_places": 3
     },
     "unbonding": {
-      "collector": "secret1b1b1b1b1b1b1b1b1",
       "rate": 100,
       "decimal_places": 3
     }

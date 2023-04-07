@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use cosmwasm_std::{Addr, Api, Binary, StdError, StdResult, Uint128, Uint256};
-use shade_protocol::{Contract, query_auth::QueryPermit};
+use shade_protocol::{query_auth::QueryPermit, Contract};
 
 use crate::staking_interface::Unbonding;
 
@@ -29,7 +29,6 @@ pub struct Config {
 #[cfg_attr(test, derive(Eq, PartialEq))]
 #[derive(Serialize, Deserialize, Clone, JsonSchema, Debug)]
 pub struct Fee {
-    pub collector: Addr,
     pub rate: u32,
     pub decimal_places: u8,
 }
@@ -39,6 +38,7 @@ pub struct Fee {
 pub struct FeeInfo {
     pub staking: Fee,
     pub unbonding: Fee,
+    pub collector: Addr,
 }
 
 #[cfg_attr(test, derive(Eq, PartialEq))]
@@ -70,6 +70,7 @@ pub enum ExecuteMsg {
     UpdateFees {
         staking: Option<Fee>,
         unbonding: Option<Fee>,
+        collector: Option<Addr>,
     },
     PanicUnbond {
         amount: Uint128,
@@ -94,7 +95,7 @@ pub enum ExecuteMsg {
 pub enum ExecuteAnswer {
     TransferStaked {
         amount_sent: Uint128,
-        tokens_returned: Uint128
+        tokens_returned: Uint128,
     },
     Claim {
         amount_claimed: Uint128,
@@ -144,29 +145,19 @@ pub enum ExecuteAnswer {
 pub enum ReceiverMsg {
     Stake {},
     Unbond {},
-    TransferStaked {
-        receiver: Option<Addr>
-    },
+    TransferStaked { receiver: Option<Addr> },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[cfg_attr(test, derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 pub enum QueryMsg {
-    Holdings {
-        address: Addr,
-        viewing_key: String,
-    },
+    Holdings { address: Addr, viewing_key: String },
     StakingInfo {},
     FeeInfo {},
     ContractStatus {},
-    Unbondings {
-        address: Addr,
-        viewing_key: String,
-    },
-    WithPermit {
-        permit: QueryPermit,
-    },
+    Unbondings { address: Addr, viewing_key: String },
+    WithPermit { permit: QueryPermit },
 }
 
 impl QueryMsg {
@@ -226,6 +217,7 @@ pub enum QueryAnswer {
     FeeInfo {
         staking: Fee,
         unbonding: Fee,
+        collector: Addr,
     },
     ContractStatus {
         status: ContractStatusLevel,
