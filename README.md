@@ -71,18 +71,18 @@ CODE_ID=$(secretcli q compute list-code | jq '.[-1].code_id')
 6. Instantiate a new contract
 
 ```shell
-TX_HASH=$(secretcli tx compute instantiate ${CODE_ID} '<INIT_MSG>' --from <ACCOUNT_NAME> -y --gas 3000000 --label $(openssl rand -base64 12 | tr -d /=+ | cut -c -16) | jq '.txhash' | tr -d '"'
+TX_HASH=$(secretcli tx compute instantiate ${CODE_ID} '<INIT_MSG>' --from <ACCOUNT_NAME> -y --gas 3000000 --label $(openssl rand -base64 12 | tr -d /=+ | cut -c -16) | jq '.txhash' | tr -d '"') && echo ${TX_HASH}
 ```
 
 7. Query contract's address
 
 ```shell
-ADDRESS=$(secretcli q compute tx ${TX_HASH} | jq '.output_logs[0].attributes[0].value' | sed 's/^"\|"$//g')
+ADDRESS=$(secretcli q compute tx ${TX_HASH} | jq '.output_logs[0].attributes[0].value' | tr -d '"') && echo ${ADDRESS}
 ```
 
 8. Set staking derivative as minter of derivative
 ```shell
-secretcli tx compute execute <DERIVATIVE_ADDR> '{"set_minters':{"minters":["'${ADDRESS}'"]}}' --from <ACCOUNT_NAME> -y | jq
+secretcli tx compute execute <DERIVATIVE_ADDR> '{"set_minters":{"minters":["'${ADDRESS}'"]}}' --from <ACCOUNT_NAME> -y | jq
 ```
 
 9. Whitelist staking derivative in staking contract
@@ -95,7 +95,7 @@ secretcli tx compute execute <STAKING_ADDR> '{"add_transfer_whitelist":{"user":"
 - Query transaction's status
 
 ```shell
-secretcli q compute tx <TX_HASH> | jq
+secretcli q compute tx ${TX_HASH} | jq
 ```
 
 <a id="init"></a>
