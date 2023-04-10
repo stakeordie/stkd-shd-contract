@@ -10,6 +10,7 @@ use crate::staking_interface::Unbonding;
 #[derive(Serialize, Debug, Deserialize, Clone, JsonSchema)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
 pub struct Config {
+    pub prng_seed:Binary,
     // Staking contract (SHADE-CUSTOM) information
     pub staking: ContractInfo,
     pub staking_contract_vk: String,

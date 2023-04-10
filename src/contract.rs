@@ -1,10 +1,13 @@
+use std::ops::Add;
+
 use crate::{
     msg::{
         status_level_to_u8, Config, ContractStatusLevel, ExecuteAnswer, ExecuteMsg,
         InProcessUnbonding, InstantiateMsg, PanicUnbond, QueryAnswer, QueryMsg, QueryWithPermit,
         ReceiverMsg, ResponseStatus::Success,
     },
-    staking_interface::{transfer_staked_msg, Reward, Rewards},
+    staking_interface::{transfer_staked_msg, Reward, Rewards, Token},
+    state::{ContractsVksStore, REWARDED_TOKENS_LIST},
 };
 
 #[allow(unused_imports)]
@@ -100,6 +103,7 @@ pub fn instantiate(
     CONFIG.save(
         deps.storage,
         &Config {
+            prng_seed: msg.prng_seed,
             staking_contract_vk: staking_contract_vk.clone(),
             token_contract_vk: token_contract_vk.clone(),
             query_auth: msg.query_auth.clone(),
@@ -397,12 +401,6 @@ fn try_compound_rewards(deps: DepsMut, priority: ContractStatusLevel) -> StdResu
     let staked = get_staked_shd(deps.querier, &config.contract_address, &config)?;
     let rewards = query_rewards(deps.querier, &config.contract_address, &config)?;
 
-    let rewards: Vec<Reward> = rewards
-        .rewards
-        .into_iter()
-        .filter(|r| r.token.address != config.token.address)
-        .collect();
-
     let mut messages: Vec<CosmosMsg> = vec![];
     if staked > 0 {
         messages.push(compound_msg(
@@ -410,23 +408,52 @@ fn try_compound_rewards(deps: DepsMut, priority: ContractStatusLevel) -> StdResu
             config.staking.address.to_string(),
         )?);
     }
-
-    for r in rewards.into_iter() {
-        if r.amount > Uint128::zero() {
-            messages.push(send_msg(
-                config.fees.collector.to_string(),
-                r.amount,
-                None,
-                Some("Sending rewards to ShadeDAO".to_string()),
-                None,
+    let response = Response::default();
+    let rewarded_tokens_list = REWARDED_TOKENS_LIST
+        .may_load(deps.storage)?
+        .unwrap_or_default();
+    for addr in rewarded_tokens_list.into_iter() {
+        let token = ContractsVksStore::may_load(deps.storage, &addr);
+        if let Some(t) = token {
+            let balance = balance_query(
+                deps.querier,
+                config.contract_address.to_string(),
+                t.viewing_key,
                 RESPONSE_BLOCK_SIZE,
-                r.token.code_hash.clone(),
-                r.token.address.to_string(),
-            )?);
+                t.code_hash.clone(),
+                t.address.to_string(),
+            )?;
+
+            let item = rewards
+                .rewards
+                .iter()
+                .find(|r| r.token.address == t.address);
+
+            let amount = if let Some(reward) = item {
+                balance.amount.add(reward.amount)
+            } else {
+                balance.amount
+            };
+
+            if amount > Uint128::zero() {
+                messages.push(send_msg(
+                    config.fees.collector.to_string(),
+                    amount,
+                    None,
+                    Some(format!(
+                        "Sending {} rewards to ShadeDAO",
+                        t.address.to_string()
+                    )),
+                    None,
+                    RESPONSE_BLOCK_SIZE,
+                    t.code_hash.clone(),
+                    t.address.to_string(),
+                )?);
+            }
         }
     }
 
-    Ok(Response::default().add_messages(messages))
+    Ok(response.add_messages(messages))
 }
 
 /// It checks if the sender is an admin, and if so, it sends a message to the staking contract to unbond
@@ -693,9 +720,29 @@ fn try_stake(
         return Err(StdError::generic_err("No SHD was sent for staking"));
     }
 
+    let rewards = query_rewards(deps.querier, &config.contract_address, &config)?;
+
+    let mut non_shd_rewards: Vec<Reward> = vec![];
+    let mut shd_rewards: Option<Reward> = None;
+
+    for r in rewards.rewards.into_iter() {
+        if r.token.address == config.token.address {
+            shd_rewards = Some(r);
+        } else {
+            non_shd_rewards.push(r)
+        }
+    }
+    let rewards_amount = if let Some(r) = shd_rewards {
+        r.amount.u128()
+    } else {
+        0_128
+    };
+
+    let available = get_available_shd(deps.querier, &config.contract_address, &config)?;
     let (fee, deposit) = get_fee(amount, &config.fees.staking)?;
+
     // get available SHD + available rewards
-    let (_, _, claiming) = get_delegatable(deps.querier, &env.contract.address, &config)?;
+    let claiming = available + rewards_amount;
 
     // get staked SHD
     let bonded = get_staked_shd(deps.querier, &env.contract.address, &config)?;
@@ -723,8 +770,11 @@ fn try_stake(
     if mint == Uint128::zero() {
         return Err(StdError::generic_err("The amount of SHD deposited is not enough to receive any of the derivative token at the current price"));
     }
-    // claim pending rewards
-    let mut messages = vec![mint_msg(
+    // Sync rewarded tokens
+    let mut messages = sync_rewarded_tokens(&env, deps, info, &non_shd_rewards, &config)?;
+
+    // Mint derivatives in exchange
+    messages.push(mint_msg(
         from.to_string(),
         mint,
         Some(format!(
@@ -735,7 +785,7 @@ fn try_stake(
         RESPONSE_BLOCK_SIZE,
         config.derivative.code_hash.clone(),
         config.derivative.address.to_string(),
-    )?];
+    )?);
 
     // send fee to collector
     messages.push(send_msg(
@@ -744,7 +794,7 @@ fn try_stake(
         None,
         Some(format!(
             "Payment of fee for staking SHD using contract {}",
-            env.contract.address
+            env.contract.address.clone()
         )),
         config.token.entropy.clone(),
         RESPONSE_BLOCK_SIZE,
@@ -1120,7 +1170,15 @@ fn query_rewards<C: CustomQuery>(
 #[allow(dead_code)]
 // Allow warn code because mock queries make warnings to show up
 fn query_rewards<C: CustomQuery>(_: QuerierWrapper<C>, _: &Addr, _: &Config) -> StdResult<Rewards> {
-    Ok(Rewards { rewards: vec![] })
+    use crate::staking_interface::RewardToken;
+
+    Ok(Rewards { rewards: vec![Reward{
+        token: RewardToken {
+            address: Addr::unchecked("shade_contract_info_address"),
+            code_hash: String::from("shade_contract_info_code_hash"),
+        },
+        amount: Uint128::from(100000000_u128)
+    }] })
 }
 
 #[cfg(test)]
@@ -1427,6 +1485,59 @@ pub fn new_viewing_key(
 
     let viewing_key = VIEWING_KEY_PREFIX.to_string() + &base64::encode(key);
     (viewing_key, rand_slice)
+}
+
+pub fn sync_rewarded_tokens(
+    env: &Env,
+    deps: DepsMut,
+    info: MessageInfo,
+    rewarded_tokens: &Vec<Reward>,
+    config: &Config,
+) -> StdResult<Vec<CosmosMsg>> {
+    let mut messages = vec![];
+    let mut no_registered_tokens: Vec<Addr> = vec![];
+
+    for r in rewarded_tokens.into_iter() {
+        let is_registered = ContractsVksStore::may_load(deps.storage, &r.token.address);
+
+        if is_registered.is_none() {
+            // This contract isn't registered.
+            no_registered_tokens.push(r.token.address.clone());
+            // Generated a vk for this token and store it
+            let (new_vk, _) = new_viewing_key(
+                &info.sender,
+                &env,
+                &config.prng_seed,
+                config.staking.entropy.clone().unwrap_or_default().as_ref(),
+            );
+
+            let token: Token = Token {
+                address: r.token.address.clone(),
+                code_hash: r.token.code_hash.clone(),
+                viewing_key: new_vk.clone(),
+            };
+            ContractsVksStore::save(deps.storage, &r.token.address, &token)?;
+
+            messages.push(set_viewing_key_msg(
+                new_vk,
+                None,
+                RESPONSE_BLOCK_SIZE,
+                r.token.code_hash.clone(),
+                r.token.address.to_string(),
+            )?)
+        }
+    }
+
+    if no_registered_tokens.len() > 0 {
+        let registered_tokens = REWARDED_TOKENS_LIST
+            .may_load(deps.storage)?
+            .unwrap_or_default();
+        let new_rewarded_tokens = [registered_tokens, no_registered_tokens].concat();
+
+        REWARDED_TOKENS_LIST.save(deps.storage, &new_rewarded_tokens)?;
+    }
+
+    Ok(messages)
 }
 
 /// If the contract admin has disabled the contract, then this function will return an error
@@ -2271,7 +2382,7 @@ mod tests {
             "handle() failed: {}",
             handle_result.err().unwrap()
         );
-        let expected_tokens_return = Uint128::from(3800_u128);
+        let expected_tokens_return = Uint128::from(2850_u128);
         let (_, tokens_returned) = match from_binary(&handle_result.unwrap().data.unwrap()).unwrap()
         {
             ExecuteAnswer::Stake {
