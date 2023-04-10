@@ -360,7 +360,7 @@ fn try_claim(
             config.fees.collector.to_string(),
             fee,
             None,
-            Some("Payment of fee for unbonding SHD".to_string()),
+            Some(base64::encode(&"Payment of fee for unbonding SHD")),
             config.token.entropy.clone(),
             RESPONSE_BLOCK_SIZE,
             config.token.code_hash.clone(),
@@ -792,10 +792,10 @@ fn try_stake(
         config.fees.collector.to_string(),
         fee,
         None,
-        Some(format!(
+        Some(base64::encode(format!(
             "Payment of fee for staking SHD using contract {}",
             env.contract.address.clone()
-        )),
+        ))),
         config.token.entropy.clone(),
         RESPONSE_BLOCK_SIZE,
         config.token.code_hash.clone(),
@@ -901,10 +901,10 @@ fn try_transfer_staked(
                 config.fees.collector.to_string(),
                 fee,
                 None,
-                Some(format!(
+                Some(base64::encode(format!(
                     "Payment of fee for transfer staked SHD using contract {}",
                     env.contract.address
-                )),
+                ))),
                 config.token.entropy.clone(),
                 RESPONSE_BLOCK_SIZE,
                 config.token.code_hash.clone(),
