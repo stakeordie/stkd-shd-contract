@@ -231,6 +231,14 @@ pub struct RewardToken {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub struct Token {
+    pub address: Addr,
+    pub code_hash: String,
+    pub viewing_key: String
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub struct Reward {
     pub token: RewardToken,
     pub amount: Uint128,
